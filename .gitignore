@@ -1,0 +1,12 @@
+node_modules/
+vendor/*
+# Small vendored sources (vendor/bsdiff) are tracked -- only CEF's large
+# binary distribution stays ignored.
+!vendor/bsdiff/
+!vendor/bsdiff/**
+native/build/
+poc/
+dist-app/
+docs/.vitepress/dist/
+*.log
+.DS_Store

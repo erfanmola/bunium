@@ -1,0 +1,22 @@
+{
+  "name": "__PROJECT_NAME__",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"bun run electron:dev\"",
+    "electron:dev": "bun run --watch electron/main.js",
+    "build": "vite build",
+    "start": "bun run electron/main.js"
+  },
+  "dependencies": {
+    "bunium": "__BUNIUM_VERSION__",
+    "solid-js": "2.0.0-rc.0",
+    "@solidjs/web": "2.0.0-rc.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0",
+    "vite": "^8.2.0",
+    "vite-plugin-solid": "3.0.0-next.27"
+  }
+}

@@ -1,0 +1,19 @@
+name: CI
+
+# Lint + typecheck on every push/PR. Purposefully does NOT run the
+# examples/: they need the native shim (native/mac/build.sh) and the
+# 388M CEF distro, both git-ignored, so a fresh clone can't build them.
+# Docs build is covered by the separate Docs workflow.
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun run lint
+      - run: bun run typecheck

@@ -1,0 +1,12 @@
+{
+  "name": "bunium-packaging-fixture",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "build": "echo 'fixture has no build step (dist/ is committed verbatim)'"
+  },
+  "dependencies": {
+    "bunium": "file:../../.."
+  }
+}

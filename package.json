@@ -1,0 +1,21 @@
+{
+  "name": "bunium",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "build:native:mac": "native/mac/build.sh",
+    "pack:mac": "packaging/mac/package.sh",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "docs:dev": "bun run --cwd=docs dev",
+    "docs:build": "bun run --cwd=docs build",
+    "release:update": "bun scripts/release.ts"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.7",
+    "bun-types": "^1.3.14",
+    "typescript": "^7.0.2"
+  }
+}

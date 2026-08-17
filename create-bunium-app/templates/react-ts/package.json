@@ -1,0 +1,26 @@
+{
+  "name": "__PROJECT_NAME__",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"bun run electron:dev\"",
+    "electron:dev": "bun run --watch electron/main.ts",
+    "build": "tsc -b && vite build",
+    "start": "bun run electron/main.ts"
+  },
+  "dependencies": {
+    "bunium": "__BUNIUM_VERSION__",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.4",
+    "concurrently": "^9.0.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.0"
+  }
+}

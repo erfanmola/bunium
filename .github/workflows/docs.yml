@@ -1,0 +1,38 @@
+name: Docs
+
+# Builds the VitePress docs and deploys them to GitHub Pages on every
+# push to main. Requires Pages > Source > "GitHub Actions" in the repo
+# settings (or build_type: workflow), otherwise deploy-pages fails.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --cwd docs
+      - name: Build
+        run: bun run --cwd=docs build
+        env:
+          # Project pages are served under /bunium/. VitePress reads this
+          # in .vitepress/config.ts; unset in dev, where "/" is correct.
+          BUNIUM_DOCS_BASE: /bunium/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/.vitepress/dist
+      - name: Deploy
+        uses: actions/deploy-pages@v4

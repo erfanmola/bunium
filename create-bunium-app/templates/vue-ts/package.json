@@ -1,0 +1,25 @@
+{
+  "name": "__PROJECT_NAME__",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"bun run electron:dev\"",
+    "electron:dev": "bun run --watch electron/main.ts",
+    "build": "vue-tsc -b && vite build",
+    "start": "bun run electron/main.ts"
+  },
+  "dependencies": {
+    "bunium": "__BUNIUM_VERSION__",
+    "vue": "^3.5.40"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "@vue/tsconfig": "^0.9.1",
+    "concurrently": "^9.0.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.0",
+    "vue-tsc": "^3.3.8"
+  }
+}

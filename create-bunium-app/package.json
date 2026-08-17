@@ -1,0 +1,9 @@
+{
+  "name": "create-bunium-app",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "create-bunium-app": "./index.ts"
+  }
+}
