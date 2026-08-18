@@ -1,12 +1,26 @@
 {
   "name": "bunium",
   "version": "0.0.1",
-  "private": true,
+  "license": "MIT",
   "type": "module",
   "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src/",
+    "LICENSE"
+  ],
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "optionalDependencies": {
+    "bunium-darwin-arm64": "0.0.1"
+  },
   "scripts": {
     "build:native:mac": "native/mac/build.sh",
     "pack:mac": "packaging/mac/package.sh",
+    "release:artifacts": "scripts/stage-release-artifacts.sh",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "docs:dev": "bun run --cwd=docs dev",

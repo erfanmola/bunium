@@ -1159,16 +1159,66 @@ parses the flag wrong and dumps usage). Pages: `index.md` (status overview),
 bug caught: raw `<bunium-webview>` inside an api-reference table cell is parsed by
 VitePress/Vue as an unterminated HTML element — must be escaped as `&lt;bunium-webview&gt;`
 (headings + code blocks are fine, inline table cells are not).
-`bun run docs:build` passes clean. **npm publishing half still blocked**: the package
-depends on native artifacts (built shim dylib `native/build/`, currently git-ignored, and
-the trimmed ~335MB CEF distribution) that can't go in the npm tarball -- needs a
-per-platform release-artifact pipeline (see `docs/guide/publishing.md` for the full
-disposition). Root `package.json` remains `"private": true`; a `files` whitelist must be
-added at publish time so `vendor/` can never enter the tarball.
+`bun run docs:build` passes clean.
+
+**Progress (2026-08-18): npm half unblocked for run-time resolution + local artifact
+pipeline; license + CI release pipeline landed; publish gated on credentials.** The
+npm package still can't ship the native bits in its tarball, so the published
+package now resolves them from a platform-scoped sibling, and a verified local
+pipeline produces it:
+
+- [x] **`src/paths.ts` — artifact resolution for installed consumers.** Each of
+      `BUNIUM_SHIM_PATH`/`BUNIUM_SUBPROCESS_PATH`/`BUNIUM_FRAMEWORK_DIR` resolves
+      independently: env override → dev tree → platform package
+      `bunium-<platform>-<arch>` (e.g. `bunium-darwin-arm64`) found via
+      `import.meta.resolve` in the consumer's node_modules, laid out as
+      `shim/{bunium_shim.dylib,bunium_subprocess,ANGLE libs}` +
+      `framework/Chromium Embedded Framework.framework` (trimmed). Shim +
+      subprocess CEF install name rewritten to `@loader_path/../framework/...` so
+      artifacts are location-independent. `BUNIUM_NATIVE_PACKAGE` overrides the
+      package name for testing. `src/native.ts` now re-exports `paths` from it;
+      `app.ts`/`dlopen` consumers unchanged.
+- [x] **Verified installed-consumer end-to-end** (not just unit):
+      `scripts/verify-platform-package.sh` builds a consumer sandbox
+      (`dist-release/_consumer/`: materialized `bunium` + staged platform package,
+      no dev tree reachable) and runs a real window + paint, pixel-verifying a
+      green page — PLATFORM-PACKAGE-SMOKE PASS.
+- [x] **`scripts/stage-release-artifacts.sh` (`bun run release:artifacts`)** —
+      stages `dist-release/bunium-darwin-arm64/` (trimmed CEF + shim + subprocess +
+      ANGLE, `os`/`cpu`-guarded `package.json`) + `bunium-darwin-arm64-<version>.tar.gz`;
+      unterminated vendored absolute install names re-aimed via otool extraction.
+      Staged size: 260M (~335M app minus app/bun/helper overhead), matches the
+      Phase 10 trim results.
+- [x] **CEF trim extracted to `packaging/mac/cef-trim.sh`** — shared by `package.sh`
+      (old inline block replaced; re-verified: fixture pack = 335M, PACKAGED_APP_VERIFY
+      PASS) and the stage script. No behavior change to packaging.
+- [x] **Publish metadata prepped**: root `package.json` gains `exports`, `files`
+      (src/ + LICENSE only — `vendor/` can never enter the tarball), `engines`
+      (bun >= 1.0); `create-bunium-app` gains `files` + `engines`. Both remain
+      `"private": true` until publish.
+- [x] **License** — MIT, `LICENSE` added, `"license": "MIT"` in both
+      `package.json`s; `files` already whitelists it for the npm tarball.
+- [x] **CI release pipeline** — `.github/workflows/release.yml` (tag `v*`,
+      macos-14 arm64): downloads the vendored CEF distro
+      (`cef_binary_<version>_macosarm64_minimal.tar.bz2`, sha1-pinned via
+      `CEF_SHA1`), builds `libcef_dll_wrapper` via cmake, then
+      `build:native:mac` + `release:artifacts` + the installed-consumer verify,
+      and attaches the archive to a GitHub Release. Provenance + URL resolved:
+      CMakeCache shows the original distro was the canonical spotifycdn
+      `macosarm64_minimal` build; the old `downloads/cef_binaries/<version>/`
+      URL prefix 404s (index.json URLs stale) but the flat
+      `https://cef-builds.spotifycdn.com/cef_binary_<version>_macosarm64_minimal.tar.bz2`
+      works and serves the pinned sha1.
+- [ ] **Publish** — `bunium` + `bunium-darwin-arm64` (from the staged dir) +
+      `create-bunium-app`; remove `private`; add the platform package as an
+      `optionalDependency` on the JS side. Needs npm credentials (user); tag
+      `v0.0.1` first to exercise release.yml.
+- [ ] **Linux (Phase 6) / Windows (Phase 7)** — new platforms get their own
+      platform-scoped packages the same way once those ports exist.
 
 ---
 
 **Naming:** `bunium`, confirmed by user.
 **Decided:** IPC wire format — see `ARCHITECTURE.md` §15/§18 (CefProcessMessage-based, named
 messages, JSON payloads, ≤8-arg native ABI functions).
-**Not yet decided:** package manager/monorepo layout, license, repo hosting.
+**Not yet decided:** package manager/monorepo layout, repo hosting.

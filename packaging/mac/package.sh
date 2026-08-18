@@ -64,6 +64,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# Phase 10 CEF resource trim, shared with scripts/stage-release-artifacts.sh.
+source "$SCRIPT_DIR/cef-trim.sh"
 
 NAME=""
 BUNDLE_ID=""
@@ -173,29 +175,7 @@ cp "$CEF_FW_SRC/Libraries/"*.json "$APP_BUNDLE/Contents/Frameworks/"
 # --- Phase 10: trim CEF resources (default on, --no-trim / --locales override) ---
 if [ "$TRIM_CEF" -eq 1 ]; then
   FW_RES="$APP_BUNDLE/Contents/Frameworks/Chromium Embedded Framework.framework"
-  echo "trimming CEF resources (locales: $LOCALES)..."
-  if [ "$LOCALES" = "all" ]; then
-    echo "  keeping all *.lproj locale dirs (--locales all)"
-  else
-    # keeplist syntax: comma-separated language codes, e.g. "en,de,fr".
-    keep=$(echo "$LOCALES" | tr ',' '\n')
-    for d in "$FW_RES/Resources/"*.lproj; do
-      [ -d "$d" ] || continue
-      lang="$(basename "$d" .lproj)"
-      if ! echo "$keep" | grep -qx "$lang"; then
-        echo "  removing locale: $(basename "$d")"
-        rm -rf "$d"
-      fi
-    done
-  fi
-  # SwiftShader software-Vulkan stack: only needed when there is no Metal
-  # (never the case on any macOS this runs on). ANGLE libs stay.
-  for f in libvk_swiftshader.dylib libvulkan.dylib vk_swiftshader_icd.json; do
-    rm -f "$APP_BUNDLE/Contents/Frameworks/$f"
-  done
-  # regenerable runtime shader cache + Finder junk from the vendored tree
-  rm -f "$FW_RES/Resources/gpu_shader_cache.bin"
-  rm -f "$FW_RES/.DS_Store"
+  trim_cef_framework "$FW_RES" "$APP_BUNDLE/Contents/Frameworks" "$LOCALES"
 fi
 
 # --- Resources: the app (dist/ + electron/ + package.json) + a real (not

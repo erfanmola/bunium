@@ -1,34 +1,7 @@
 import { dlopen, FFIType } from "bun:ffi";
+import { paths } from "./paths";
 
-const repoRoot = new URL("..", import.meta.url).pathname;
-
-// Packaged apps (Phase 8) can't keep pointing at this repo's dev-tree
-// paths, so every native artifact location is env-overridable
-// (BUNIUM_SHIM_PATH / BUNIUM_SUBPROCESS_PATH / BUNIUM_FRAMEWORK_DIR) with
-// the dev-tree layout as the default fallback -- the .app launcher
-// (packaging/mac/package.sh) exports the bundle-relative paths before
-// exec'ing bun, and dev scripts never set them, so both modes work with
-// no other branching.
-const override = (key: string, fallback: string): string =>
-  process.env[key] ?? fallback;
-
-export const paths = {
-  shim: override(
-    "BUNIUM_SHIM_PATH",
-    `${repoRoot}native/build/bunium_shim.dylib`,
-  ),
-  subprocess: override(
-    "BUNIUM_SUBPROCESS_PATH",
-    `${repoRoot}native/build/bunium_subprocess`,
-  ),
-  frameworkDir: override(
-    "BUNIUM_FRAMEWORK_DIR",
-    `${repoRoot}vendor/cef-macosarm64/Release/Chromium Embedded Framework.framework`,
-  ),
-  get resourcesDir() {
-    return `${this.frameworkDir}/Resources`;
-  },
-};
+export { paths };
 
 // Per-app CEF profile dir. Empty for dev (CEF keeps its shared default
 // profile, so dev behavior is unchanged); packaged launchers set it to a

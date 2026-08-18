@@ -205,7 +205,7 @@ src/tar.ts <dir>` prints an archive to stdout; `collectDirectory` walks a tree i
 
 ## Phase 10 — CEF resource trim (verified working 2026-08-17)
 
-- **Trim is default-ON inside `package.sh`.** Before: 401M packaged app (59M of it
+- **Trim now lives in `packaging/mac/cef-trim.sh`** (`trim_cef_framework <fw_dir> <flat_libs_dir> <locales>`), shared by `package.sh` AND `scripts/stage-release-artifacts.sh` — the old `package.sh` inline block was replaced by a call (re-verified: fixture pack still 335M, PACKAGED_APP_VERIFY PASS). Before: 401M packaged app (59M of it
   single-locale bloat: ~130 per-locale `*.lproj` dirs at ~49M total). After: 335M
   (-16%). Trim removes every `*.lproj` except the `--locales` keeplist (default `en`),
   the SwiftShader software-Vulkan trio (`libvk_swiftshader.dylib` 16M,
@@ -227,6 +227,44 @@ src/tar.ts <dir>` prints an archive to stdout; `collectDirectory` walks a tree i
   `examples/scroll-timing-test.ts` = avg inter-frame gap 16.61ms / max 26.42ms
   (~59.9fps effective) with `BUNIUM_CEF_VERBOSE=1`, slightly better than the ~17.4ms
   pre-Phase-8 baseline.
+
+## Phase 11 — npm publish path (resolution + staging verified; license + CI landed 2026-08-18)
+
+- **Artifact resolution is in `src/paths.ts`** (native.ts re-exports it). Per key:
+  env override (`BUNIUM_SHIM_PATH`/`BUNIUM_SUBPROCESS_PATH`/`BUNIUM_FRAMEWORK_DIR`,
+  the packaged-app launcher mode) → dev tree (existence check) → platform package
+  `bunium-<platform>-<arch>` via `import.meta.resolve` in the consumer's node_modules.
+  `BUNIUM_NATIVE_PACKAGE` overrides the package name (testing). Dev behavior is
+  byte-identical (dev paths win when present); the platform fallback only fires when
+  neither env nor dev tree is available.
+- **Platform-package layout** (what `dist-release/bunium-darwin-arm64/` looks like):
+  `shim/{bunium_shim.dylib, bunium_subprocess, ANGLE libs+json}` +
+  `framework/Chromium Embedded Framework.framework/` (trimmed). Shim + subprocess
+  CEF install name = `@loader_path/../framework/...` (location-independent; the old
+  absolute dev path never ships). ANGLE needs no rewrite — its rpaths
+  (`@executable_path/`) resolve against the subprocess's own dir.
+- **`bun run release:artifacts`** = `scripts/stage-release-artifacts.sh`: builds/stages
+  the platform package + `bunium-darwin-arm64-<v>.tar.gz` under `dist-release/`. Needs
+  `native/build/` + `vendor/` (git-ignored, local only). ~260M staged.
+- **`scripts/verify-platform-package.sh`** = the installed-consumer harness: rebuilds
+  `dist-release/_consumer/` (materialized bunium + platform package, no dev tree on the
+  resolution path) and runs a real window + paint (green-pixel check). Run it after any
+  change to `src/paths.ts` or the staging script.
+- **Verification gotcha (same class as the `FFIType.cstring` one):** the resolution
+  bug you'd get from a wrong layout is a dlopen/load failure at window creation, NOT a
+  JS error — always run the consumer harness, not just `tsc --noEmit`.
+- **CI release pipeline** = `.github/workflows/release.yml` (tag `v*`, macos-14
+  arm64): downloads the vendored CEF distro fresh (`cef_binary_<version>_macosarm64_minimal.tar.bz2`,
+  sha1-pinned via `CEF_SHA1` env), builds `libcef_dll_wrapper` (cmake), then
+  `build:native:mac` → `release:artifacts` → `verify-platform-package.sh`, attaches
+  the archive to a GitHub Release. CEF URL gotcha: the old
+  `downloads/cef_binaries/<version>/` prefix 404s (index.json URLs are stale); flat
+  `https://cef-builds.spotifycdn.com/cef_binary_<version>_macosarm64_minimal.tar.bz2`
+  works and serves the pinned sha1. Bump `CEF_VERSION`/`CEF_SHA1` (index.json value)
+  together when upgrading `vendor/`.
+- **Still open:** npm publish (needs credentials; `private` must come off, platform
+  package added as `optionalDependency` at publish; tag `v0.0.1` first to exercise
+  release.yml). License is MIT (`LICENSE` + `"license"` field, both `package.json`s).
 
 ## Rebuild commands (macOS)
 

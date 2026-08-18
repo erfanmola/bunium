@@ -1,9 +1,17 @@
 {
   "name": "create-bunium-app",
   "version": "0.0.1",
-  "private": true,
+  "license": "MIT",
   "type": "module",
   "bin": {
     "create-bunium-app": "./index.ts"
+  },
+  "files": [
+    "index.ts",
+    "verify-prod.ts",
+    "templates/"
+  ],
+  "engines": {
+    "bun": ">=1.0.0"
   }
 }

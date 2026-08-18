@@ -7,6 +7,8 @@ vendor/*
 native/build/
 poc/
 dist-app/
+dist-release/
 docs/.vitepress/dist/
+docs/.vitepress/cache/
 *.log
 .DS_Store

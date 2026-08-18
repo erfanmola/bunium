@@ -1,0 +1,78 @@
+name: Release
+
+# Tag-triggered native artifact build + GitHub Release. On a fresh runner,
+# CEF is not vendored (git-ignored), so this workflow reproduces the local
+# vendor/cef-macosarm64 from the canonical automated-builds CDN, builds the
+# shim + subprocess (+ ANGLE libs), stages the bunium-darwin-arm64 platform
+# package, smoke-verifies the installed-consumer path, and attaches the
+# archive to a GitHub Release.
+#
+# The CDN dropped the old `downloads/cef_binaries/<version>/` path prefix in
+# 2026 -- index.json URLs no longer resolve. Flat paths work instead:
+#   https://cef-builds.spotifycdn.com/cef_binary_<version>_macosarm64_minimal.tar.bz2
+#
+# npm publish stays manual (needs credentials + optionalDependency wiring);
+# see docs/guide/publishing.md.
+on:
+   push:
+      tags: ["v*"]
+   workflow_dispatch:
+
+permissions:
+   contents: write
+
+env:
+   # Must match the vendored distro (vendor/cef-macosarm64). Bump both when
+   # upgrading; SHA1 is the index.json value for the minimal macosarm64 file.
+   CEF_VERSION: "151.3.16+gbe1e15d+chromium-151.0.7922.109"
+   CEF_SHA1: "9686f8f6ef1343aa813af2c200db29f8b95abe7f"
+
+jobs:
+   darwin-arm64:
+      runs-on: macos-14 # arm64 -- matches the macosarm64 CEF distro
+      steps:
+         - uses: actions/checkout@v4
+
+         - uses: oven-sh/setup-bun@v2
+
+         - name: Download CEF (reproduces vendor/cef-macosarm64)
+           run: |
+              archive="cef_binary_${CEF_VERSION}_macosarm64_minimal.tar.bz2"
+              curl -fL --retry 3 -o "$archive" \
+                "https://cef-builds.spotifycdn.com/${archive}"
+              actual="$(shasum -a 1 "$archive" | awk '{print $1}')"
+              [ "$actual" = "$CEF_SHA1" ] || {
+                echo "CEF sha1 mismatch: expected $CEF_SHA1 got $actual" >&2
+                exit 1
+              }
+              mkdir -p vendor
+              tar -xjf "$archive" -C vendor
+              mv "vendor/cef_binary_${CEF_VERSION}_macosarm64_minimal" \
+                vendor/cef-macosarm64
+
+         - name: Build libcef_dll_wrapper
+           run: |
+              cmake -S vendor/cef-macosarm64 -B vendor/cef-macosarm64/build
+              cmake --build vendor/cef-macosarm64/build --target libcef_dll_wrapper
+
+         - run: bun install
+
+         - name: Resolve release version (strip leading v)
+           run: echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+         - name: Build shim + subprocess
+           run: bun run build:native:mac
+
+         - name: Stage platform package
+           run: bun run release:artifacts -- -v "$RELEASE_VERSION"
+
+         - name: Verify installed-consumer path
+           # Real window + paint on the runner; PLATFORM-PACKAGE-SMOKE PASS on
+           # exit 0. Run after staging so it exercises the staged artifacts.
+           run: scripts/verify-platform-package.sh
+
+         - name: Attach archive to GitHub Release
+           uses: softprops/action-gh-release@v2
+           with:
+              files: |
+                 dist-release/bunium-darwin-arm64-${{ env.RELEASE_VERSION }}.tar.gz
