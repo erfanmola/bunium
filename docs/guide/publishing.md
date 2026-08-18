@@ -62,12 +62,15 @@ the installed-consumer path, PASS locally and in CI before the release upload.
 ## What still blocks a real publish
 
 1. **npm credentials** — publish `bunium`, then `bunium-darwin-arm64`
-   (from the staged dir: `npm publish dist-release/bunium-darwin-arm64`),
+   (from the staged dir: `npm publish ./dist-release/bunium-darwin-arm64` —
+   note the `./`; npm parses a bare `dist-release/...` as a git spec),
    then `create-bunium-app` (its templates already reference `bunium`).
    Requires an npm account/token; `"private": true` must come off
    `package.json` (both packages) at that point, and the JS package should
    add the platform package as an `optionalDependency` pinned to the same
-   version before publishing. The release workflow only runs on tags, so tag
+   version before publishing. `npm publish --dry-run` validates the tarball
+   without credentials (root: src/ + LICENSE only, 29 kB; platform package:
+   126 MB, os/cpu-guarded). The release workflow only runs on tags, so tag
    `v0.0.1` first to exercise it.
 2. **Other platforms** — Linux/Windows artifacts don't exist yet (Phases 6/7).
 
