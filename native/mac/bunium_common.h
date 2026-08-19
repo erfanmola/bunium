@@ -13,7 +13,15 @@
 #include <utility>
 #include <vector>
 
-#include <cstdio>
+#if defined(_WIN32)
+// CEF's Windows headers pull in windows.h themselves (CefWindowInfo has
+// HWND members), so every TU that reaches them must pre-set NOMINMAX or
+// windef.h's min/max macros break CEF's own std::min/::max usage. This is
+// the single choke point common to shim, subprocess, and window TUs.
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 
 #include "include/cef_app.h"
 #include "include/cef_browser.h"

@@ -4,7 +4,16 @@
 #include <cstring>
 #include <unordered_map>
 
+#if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
+#endif
+#if defined(_WIN32)
+// windows.h min/max macros collide with CEF headers (and std::min/max) --
+// NOMINMAX + LEAN_AND_MEAN are the standard CEF-on-Windows incantations.
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 
 #include "bunium_common.h"
 #include "include/cef_app.h"
@@ -129,7 +138,14 @@ extern "C" void bunium_sublayer_get_clip(void *layer_handle, int *out_clipped,
                                          int *out_x, int *out_y, int *out_width,
                                          int *out_height);
 
+#if defined(_WIN32)
+// dllexport is Windows' only export mechanism -- the visibility attribute
+// form silently exports nothing from a DLL (visibility only affects ELF),
+// which would make bun:ffi's dlopen() fail on every symbol.
+#define BUNIUM_EXPORT __declspec(dllexport)
+#else
 #define BUNIUM_EXPORT __attribute__((visibility("default")))
+#endif
 
 extern "C" {
 
@@ -138,6 +154,7 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
                               const char *resources_dir_path,
                               const char *root_cache_path) {
   if (getenv("BUNIUM_BUNDLE_DEBUG")) {
+#if defined(__APPLE__)
     CFBundleRef mb = CFBundleGetMainBundle();
     CFURLRef url = mb ? CFBundleCopyBundleURL(mb) : nullptr;
     CFStringRef id = mb ? CFBundleGetIdentifier(mb) : nullptr;
@@ -154,6 +171,7 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
     fprintf(stderr,
             "[bundle-debug browser] pid=%d mainBundleURL=%s identifier=%s\n",
             (int)getpid(), urlbuf, idbuf);
+#endif
   }
   // BUNIUM_CEF_SWITCHES: extra command-line switches for the browser
   // process, e.g. "--enable-logging=stderr --v=1". The real argv here is
@@ -163,6 +181,13 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
   // most switches from the browser on their own.
   static std::vector<std::string> injected_argv;
   std::vector<char *> argv_ptrs;
+#if defined(_WIN32)
+  // CEF's Windows CefMainArgs only accepts an HINSTANCE (Chromium always
+  // re-parses the real command line), so the BUNIUM_CEF_SWITCHES argv
+  // injection below is macOS/Linux-only for now -- switches on Windows must
+  // go through CefSettings or the launcher's command line directly.
+  CefMainArgs main_args(GetModuleHandleW(nullptr));
+#else
   CefMainArgs main_args(0, nullptr);
   const char *switches = getenv("BUNIUM_CEF_SWITCHES");
   if (switches && *switches) {
@@ -183,6 +208,7 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
     main_args =
         CefMainArgs(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
   }
+#endif
   g_app = new BuniumApp();
 
   CefSettings settings;
@@ -197,6 +223,15 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
   CefString(&settings.browser_subprocess_path).FromASCII(subprocess_path);
   CefString(&settings.framework_dir_path).FromASCII(framework_dir_path);
   CefString(&settings.resources_dir_path).FromASCII(resources_dir_path);
+#if defined(_WIN32)
+  // CefSettings.framework_dir_path is macOS-only. Windows CEF keeps its
+  // resources (.pak/.dat/.bin) flat in resources_dir_path with locales/
+  // hanging off it; Chromium won't find them without an explicit
+  // locales_dir_path (default is "icudtl.dat's dir/locales", which is only
+  // right for the standard CEF sample layout).
+  std::string locales_dir = std::string(resources_dir_path) + "/locales";
+  CefString(&settings.locales_dir_path).FromASCII(locales_dir.c_str());
+#endif
   // Per-app profile dir (packaged .app launchers pass a per-app Application
   // Support path). Empty string = CEF's shared default profile, which is
   // what dev processes want -- a per-app root_cache_path avoids two crunchy

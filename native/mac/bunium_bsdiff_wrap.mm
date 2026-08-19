@@ -30,6 +30,12 @@ extern "C" {
 }
 #undef new
 
+#if defined(_WIN32)
+#define BUNIUM_BSDIFF_EXPORT __declspec(dllexport)
+#else
+#define BUNIUM_BSDIFF_EXPORT __attribute__((visibility("default")))
+#endif
+
 namespace {
 
 // Status codes shared by all exports in this file.
@@ -156,7 +162,7 @@ class BufferOwner {
 }  // namespace
 
 // Builds `patch_path` as a delta from `old_path` to `new_path`.
-extern "C" __attribute__((visibility("default"))) int
+extern "C" BUNIUM_BSDIFF_EXPORT int
 bunium_bsdiff(const char* old_path, const char* new_path, const char* patch_path) {
   int64_t old_size = 0, new_size = 0;
   BufferOwner old(ReadWholeFile(old_path, &old_size));
@@ -192,7 +198,7 @@ bunium_bsdiff(const char* old_path, const char* new_path, const char* patch_path
 // Applies `patch_path` (built against `old_path`) to produce `new_path`.
 // Validates the header (magic + sane new size) before applying so a corrupt
 // or mismatched patch fails fast without touching the output file.
-extern "C" __attribute__((visibility("default"))) int
+extern "C" BUNIUM_BSDIFF_EXPORT int
 bunium_bspatch(const char* old_path, const char* patch_path, const char* new_path) {
   int64_t patch_size = 0;
   BufferOwner patch(ReadWholeFile(patch_path, &patch_size));
@@ -225,7 +231,7 @@ bunium_bspatch(const char* old_path, const char* patch_path, const char* new_pat
 
 // Reads + validates a patch header. Returns kStatusOk or a negative status;
 // *out_new_size receives the expected size of the patched file.
-extern "C" __attribute__((visibility("default"))) int
+extern "C" BUNIUM_BSDIFF_EXPORT int
 bunium_bsdiff_patch_info(const char* patch_path, int64_t* out_new_size) {
   int64_t patch_size = 0;
   BufferOwner patch(ReadWholeFile(patch_path, &patch_size));

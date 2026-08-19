@@ -1,0 +1,15 @@
+sxe 80000003
+g
+bp kernelbase!CreateFileW
+g
+.if $spat("${poi(rsp+8)}", "*icc*") == 0 {.echo NONICU}
+du poi(rsp+8)
+g
+du poi(rsp+8)
+g
+du poi(rsp+8)
+g
+du poi(rsp+8)
+g
+du poi(rsp+8)
+q
