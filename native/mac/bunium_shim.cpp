@@ -220,6 +220,11 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
   // packaged-app issues; default WARNING keeps normal runs quiet.
   settings.log_severity =
       getenv("BUNIUM_CEF_VERBOSE") ? LOGSEVERITY_INFO : LOGSEVERITY_WARNING;
+  // Chromium derives child --lang from the browser's locale; with an empty
+  // CefSettings.locale the GPU subprocess is spawned without --lang and its
+  // main-delegate CHECK (chrome_main_delegate.cc) hard-crashes. Default to
+  // en-US like cefclient does with unset locale.
+  CefString(&settings.locale).FromASCII("en-US");
   CefString(&settings.browser_subprocess_path).FromASCII(subprocess_path);
   CefString(&settings.framework_dir_path).FromASCII(framework_dir_path);
   CefString(&settings.resources_dir_path).FromASCII(resources_dir_path);
