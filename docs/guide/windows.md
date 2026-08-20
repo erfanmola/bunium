@@ -71,6 +71,19 @@ the browser subprocess is pointed at `native/build/bunium_subprocess.exe` by
 Known example gaps: a couple of examples hardcode the macOS dylib/helper paths
 and are mac-only by design (`draggable-regions-test.ts` etc).
 
+## Packaging
+
+`packaging/win/package.sh` builds a flat distributable from this tree
+(`bash packaging/win/package.sh -a <app-dir> [--verify]`; see
+[docs/guide/packaging.md](packaging.md)). It runs on this same toolchain
+(clang-cl for the EXE launcher + the built shim/subprocess), so what the
+remote/CI flows call is exactly what you can exercise locally here:
+
+```sh
+bash native/win/build.sh
+bash packaging/win/package.sh -a packaging/mac/fixture-app --verify
+```
+
 ## Debugging children again
 
 1. Grab a minidump: `procdump64 -accepteula -e -x dumps bunium_subprocess.exe`

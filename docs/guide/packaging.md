@@ -1,7 +1,7 @@
 # Packaging
 
-Phase 8 — macOS packaging, implemented and verified. Linux (Phase 6) and Windows
-(Phase 7) packaging scripts are not written yet.
+Phase 8 — macOS and Windows packaging, implemented and verified. Linux
+(Phase 6) packaging is not written yet.
 
 ## Usage
 
@@ -35,6 +35,44 @@ Produces `dist-app/Name.app` with `Contents/{MacOS,Frameworks,Resources}`:
   `--locales all`. Chromium falls back to en-US strings when a locale's `.lproj`
   is absent — a trimmed app runs with untranslated browser chrome.
 
+## Windows (packaging/win/package.sh)
+
+```sh
+bun run pack:win -a <app-dir> [-n Name] [-o out] [-r repo] [-b bun.exe] \
+  [--locales en[,de,...]] [--verify]
+```
+
+Must run on Windows in Git Bash (needs the Windows CEF distro, clang-cl, and
+a Windows bun.exe — same toolchain as `native/win/build.sh`). Run it from a
+mac via [the remote runner](/guide/dev-from-mac) (`scripts/win-remote.sh
+pack`) or the win-smoke CI job, which both package and verify.
+
+Produces `dist-app/Name/` (flat, Windows has no bundle):
+
+- **`Name.exe`** — a compiled launcher (`packaging/win/launcher.c`, clang-cl,
+  subsystem so there's no console flash). It exports
+  `BUNIUM_SHIM_PATH`/`BUNIUM_SUBPROCESS_PATH`/`BUNIUM_FRAMEWORK_DIR`/
+  `BUNIUM_RESOURCES_DIR` + a per-app
+  `BUNIUM_ROOT_CACHE_PATH` (`%LOCALAPPDATA%\Name\CEF`), prepends `Runtime/`
+  to `PATH` so the shim's `libcef.dll` import resolves, then spawns the
+  bundled `bun.exe` on `app/electron/main.ts`, passing through std handles
+  and the exit code (CI/ssh still see output).
+- **`Runtime/`** — CEF `Release/` contents + `bunium_shim.dll` +
+  `bunium_subprocess.exe`. The browser process finds `libcef.dll` via PATH;
+  child processes find everything next to their own exe. One subprocess exe
+  serves every CEF process type (no macOS-style helper bundles).
+- **`Resources/`** — CEF `Resources/` (`resources_dir_path`); `--locales en`
+  trims the locale paks (Chromium falls back to en-US).
+- **`app/`** — the app + a materialized (un-symlinked) `node_modules/bunium`.
+- **`bun.exe.manifest`** — the comctl32 v6 SxS dependency that makes the
+  shim's `TaskDialogIndirect` resolve inside the packaged app (real
+  TaskDialogs; the dev-tree `MessageBoxW` fallback stays for processes with
+  no manifest, by design).
+
+Signing: none. Windows distribution signing is TLS-code-signing oriented;
+local use needs nothing (SmartScreen may warn on hand-transferred builds —
+clear Mark-of-the-Web on downloaded zips).
+
 ## Minimum app shape
 
 The `-a` app dir must contain `electron/main.ts` (or `.js`) plus the built static
@@ -53,8 +91,9 @@ relocated app + helpers (no absolute-path leakage), and the dev-tree fixture run
 
 - **Notarization + real signing** — ad-hoc works locally; Developer ID +
   notarization needs Apple credentials (documented in `package.sh`'s header).
-- **CI** — per-OS runners; Windows/Linux packaging scripts still to be written
-  (Phase 8's NSIS / AppImage or deb/rpm intent).
+- **CI** — per-OS runners; Linux packaging still to be written (Phase 8's
+  AppImage or deb/rpm intent). Windows packaging is CI-covered in
+  `win-smoke.yml` (package + verify the packaged EXE on every PR).
 
 ## Debug env vars (keep, env-gated)
 

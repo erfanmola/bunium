@@ -927,11 +927,14 @@ minidumps → cdb `!analyze`, `/Zi` wrapper build for symbolicated stacks.
   `scripts/win-remote.sh` (remote `$PATH`/`$HOME` expansion fixed).
 
 ### Remaining follow-ups
-- Verify `TaskDialogIndirect` end-to-end once a packaged app carries a
-  comctl32 v6 manifest (Phase 8); today the message path hits the
-  `MessageBoxW` fallback by design.
-- Packaging: Phase 8's Windows flow (port `packaging/mac/package.sh`; signing
-  story for Windows is TLS-code-signing oriented, not needed for local use).
+- Verify `TaskDialogIndirect` end-to-end in a packaged app: `bun.exe.manifest`
+  (comctl32 v6) ships with the Windows package now, so the packaged
+  `system-dialogs` message path should resolve the real TaskDialog -- needs a
+  manual check on a desktop (the dev-tree `MessageBoxW` fallback is by design
+  when no manifest is active).
+- Packaged-app verification is wired into `win-smoke.yml` + `win-remote.sh
+  pack` (fixture pixel-check); a packaged Windows app has not yet been run on
+  every `examples/` entry (dev-tree sweep only).
 
 ## Phase 8 — Packaging, signing, notarization, build pipeline
 
@@ -981,12 +984,52 @@ the pre-paint white surface (especially on a cold profile right after packaging)
 PASS for: fresh package, cold wiped profile, relocated app + helpers (no absolute-path
 leakage), and the dev-tree fixture run (unchanged dev behavior).
 
+### Windows packaging (2026-08-21)
+
+`packaging/win/package.sh` (run on the Windows box -- Git Bash + clang-cl + the
+Windows CEF distro + a Windows bun.exe; mac devs drive it via
+`scripts/win-remote.sh pack` or the win-smoke CI job) produces a flat `dist-app/Name/`
+layout:
+
+- `Name.exe` -- compiled launcher (`packaging/win/launcher.c`, clang-cl,
+  /SUBSYSTEM:WINDOWS so there is no console flash). Exports the same BUNIUM_* path
+  overrides src/paths.ts reads (SHIM/SUBPROCESS/FRAMEWORK into `Runtime/`,
+  `Resources/`, per-app root cache at `%LOCALAPPDATA%\<Name>\CEF`), prepends
+  `Runtime/` to PATH so bunium_shim.dll's libcef.dll import resolves (the exact
+  dev-recipe search order), then spawns the bundled `bun.exe` on
+  `app/electron/main.ts`, inheriting std handles and propagating the exit code (so
+  CI/ssh runs see fixture output and its 0/1 verdict).
+- `Runtime/` = CEF `Release/` contents (libcef.dll, chrome_elf, ANGLE, d3dcompiler,
+  vk_swiftshader, bootstrap crash-dialog exes, locales) + bunium_shim.dll +
+  bunium_subprocess.exe. Browser process resolves via PATH; children resolve next to
+  their own exe. Windows needs no per-type helper bundles: one subprocess exe serves
+  every CEF process type (unlike macOS' (Renderer)/(Alerts) helper apps), confirmed
+  by the Phase 7 multi-process sweep.
+- `Resources/` = CEF `Resources/` (the resources_dir_path); `--locales` keeplist opt-in.
+- `app/` = app dir + materialized (un-symlinked) node_modules/bunium (tar stream, not
+  rsync -- Git-for-Windows bash has no rsync).
+- `bun.exe.manifest` -- comctl32 v6 SxS dependency embedded next to bun.exe, which is
+  the one thing that activates real TaskDialogIndirect in the packaged app. The
+  MessageBoxW fallback stays by design for processes with no manifest (dev tree).
+  (Deliberately no dpiAwareness element: per-monitor DPI awareness would change
+  window-coordinate semantics vs the dev tree.)
+
+Verification: the mac fixture-app doubles as the Windows verifier -- `--verify`
+runs the packaged `Name.exe`, which opens a real window, pixel-checks the
+limegreen page via the same poll-for-paint logic, prints
+PACKAGED_APP_VERIFY:PASS, and exits 0. Wired into `win-smoke.yml` (package +
+verify on every PR) and `scripts/win-remote.sh pack`.
+Ignored for now (documented, not blocking): Windows distributable signing (TLS
+code-signing orientation, needs a cert; nothing needed for local use), custom
+.ico launcher icon, NSIS installer.
+
 ### Remaining follow-ups (not blocking the local path)
 
 - **Notarization + real signing**: ad-hoc works locally; Developer ID + notarization needs
   Apple credentials (documented as out of scope in package.sh's header).
-- **CI**: per-OS runners (can't cross-build a signed DMG from Linux CI); Windows/Linux
-  packaging scripts still to be written (Phase 8's NSIS/AppImage or deb/rpm intent).
+- **CI**: per-OS runners (can't cross-build a signed DMG from Linux CI); Linux
+  packaging still to be written (Phase 8's AppImage or deb/rpm intent). Windows
+  packaging is CI-covered (win-smoke) as of 2026-08-21.
 - **Debug env vars added while diagnosing** (keep, env-gated): `BUNIUM_BUNDLE_DEBUG`
   (mainBundle identity dump in browser + subprocess), `BUNIUM_CEF_VERBOSE` (CEF
   log_severity INFO + [paint]/[load-_]/[scheme-_] markers + renderer

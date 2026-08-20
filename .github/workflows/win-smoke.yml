@@ -13,6 +13,7 @@ on:
       - "src/**"
       - "package.json"
       - "bun.lock"
+      - "packaging/**"
       - ".github/workflows/win-smoke.yml"
   pull_request:
     paths:
@@ -20,6 +21,7 @@ on:
       - "src/**"
       - "package.json"
       - "bun.lock"
+      - "packaging/**"
       - ".github/workflows/win-smoke.yml"
 
 jobs:
@@ -84,6 +86,16 @@ jobs:
           bun examples/basic-window.ts 2>&1 | tee smoke.log
           grep -q "frameCount" smoke.log
 
+      - name: Package fixture app + verify packaged run
+        shell: bash
+        timeout-minutes: 8
+        run: |
+          export PATH="$GITHUB_WORKSPACE/native/build:$PATH"
+          bash packaging/win/package.sh \
+            -a packaging/mac/fixture-app -n BuniumFixture -o dist-app 2>&1 | tee pack.log
+          ./dist-app/BuniumFixture/BuniumFixture.exe 2>&1 | tee pack-verify.log
+          grep -q "PACKAGED_APP_VERIFY:PASS" pack-verify.log
+
       - name: Upload logs + artifacts
         uses: actions/upload-artifact@v4
         if: always()
@@ -92,5 +104,7 @@ jobs:
           path: |
             native/build/debug.log
             smoke.log
+            pack.log
+            pack-verify.log
             !native/build/**/*.dll
           retention-days: 7

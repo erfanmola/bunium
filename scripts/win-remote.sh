@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Developer workflow wrapping a small Windows box for bunium windows work
-# from macOS. Two modes:
+# from macOS. Three modes:
 #
 #   scripts/win-remote.sh push  [user@]host   sync tree + CEF distro, build, smoke
 #   scripts/win-remote.sh smoke [user@]host   sync, rebuild, run the basic-window smoke
+#   scripts/win-remote.sh pack  [user@]host   sync, rebuild, package the fixture app and
+#                                             verify the packaged EXE end-to-end
+#                                             (packaging/win/package.sh --verify)
 #
 # Remote host assumptions (Windows, Git Bash): clang-cl on PATH (LLVM), bun on
 # PATH, rsync reachable as `rsync`, and a normal ssh server. CEF is git-ignored
@@ -52,14 +55,31 @@ build_and_smoke() {
     "bun examples/basic-window.ts 2>&1 | tee smoke.log"
 }
 
+# Same build, then the full packaging pipeline: packaging/win/package.sh
+# (CEF staging + launcher exe compile + manifest) and a packaged-app verify
+# run. The fixture opens a real window, so the remote session needs access to
+# an interactive desktop (same as the dev smoke runs).
+build_pack_and_verify() {
+  ssh "$HOST" \
+    "cd \$HOME/$REMOTE_DIR && "\
+    "export PATH=\"\$PWD/native/build:/c/Program Files/LLVM/bin:\$PATH\" && "\
+    "bash native/win/build.sh 2>&1 | tail -5 && "\
+    "bash packaging/win/package.sh --verify "\
+    "  -a packaging/mac/fixture-app -n BuniumFixture -o dist-app 2>&1 | tee pack.log"
+}
+
 case "$MODE" in
   push|smoke)
     sync_tree
     build_and_smoke
+    ;;
+  pack)
+    sync_tree
+    build_pack_and_verify
     ;;
   *)
     usage
     ;;
 esac
 
-echo "logs stay on $HOST at $REMOTE_DIR/smoke.log"
+echo "logs stay on $HOST at $REMOTE_DIR: smoke.log (smoke) / pack.log (pack)"

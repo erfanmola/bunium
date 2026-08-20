@@ -12,7 +12,12 @@ The workable model is a **remote Windows runner** with two tiers.
 
 `.github/workflows/win-smoke.yml` builds the native stack on `windows-latest`
 and runs `examples/basic-window.ts` as the smoke test. It needs no Visual
-Studio — clang-cl + the CEF distro only (see `docs/guide/windows.md`).
+Studio — clang-cl + the CEF distro only (see `docs/guide/windows.md`). Since
+Windows packaging landed, the same job also runs `packaging/win/package.sh`
+on the fixture app and **verifies the packaged EXE end-to-end** (opens a
+real window, pixel-checks the page, requires `PACKAGED_APP_VERIFY:PASS`) —
+so a mac dev gets Windows packaging CI coverage on every PR, not just the
+dev-tree build.
 
 - Runs on every PR touching `native/**` / `src/**` and on `main`.
 - The CEF distro is git-ignored (388 MB), so the workflow downloads the
@@ -36,6 +41,8 @@ live logs), run a Windows machine — a cloud VM or an old laptop — and use
 scripts/win-remote.sh push hostname@windows-host
 # iterate: sync + build + run the smoke, streaming logs back to your mac
 scripts/win-remote.sh smoke hostname@windows-host
+# packaging: sync + build + package + verify the packaged app end-to-end
+scripts/win-remote.sh pack hostname@windows-host
 ```
 
 The script assumes Git Bash + LLVM's clang-cl are on the remote host
