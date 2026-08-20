@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
 # Builds bunium_shim.dll + bunium_subprocess.exe for Windows x64.
-# Run from a Windows environment with:
-#   - clang-cl (LLVM; MSVC toolchain headers/libs via clang-cl's own
-#     vcvars detection -- plain cl.exe + vcvars also works with CXX=cl
-#     style adjustment, but clang-cl is the blessed path) -- add LLVM's
-#     bin dir to PATH
-#   - vendor/cef-windows-x64 with the libcef_dll_wrapper built once via
-#     cmake (same as the mac flow): cmake -S vendor/cef-windows-x64
-#     -B vendor/cef-windows-x64/build -G "Visual Studio 17 2022" -A x64
-#     && cmake --build vendor/cef-windows-x64/build --target libcef_dll_wrapper
-#   - vendor/bsdiff (shared with the mac build)
+# Run from a Windows environment with clang-cl (LLVM; MSVC toolchain headers
+# and libs via clang-cl's own vcvars detection).
+#
+# CEF WRAPPER: we build libcef_dll_wrapper with clang-cl via wrap_direct.sh
+# (NOT the distro's cmake build). REASON: the cmake wrapper compiles with
+# CEF_USE_BOOTSTRAP defined, and child subprocesses crash with a corrupt
+# vtable AV (0xC0000005, verified under cdb + procdump) when the wrapper has
+# that define. A non-bootstrap clang-cl wrapper yields healthy multi-process
+# children. Keep the two scripts' FLAGS in sync.
+#
+# Other pre-reqs: vendor/bsdiff (shared with the mac build).
 set -euo pipefail
 
-# Git-Bash/MSYS mangles leading-slash compiler flags into path args; the
-# compile lines below mix real Windows paths (kept in pwd -W form) with
-# clang-cl /flags, so disable MSYS argument conversion for this script.
+# Git-Bash/MSYS mangles leading-slash compiler flags into path args; disable
+# argument conversion for this script.
 export MSYS2_ARG_CONV_EXCL='*'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -W)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -W)"
 CEF_ROOT="$REPO_ROOT/vendor/cef-windows-x64"
 CEF_RELEASE="$CEF_ROOT/Release"
-WRAPPER="$CEF_ROOT/build/libcef_dll_wrapper/Release/libcef_dll_wrapper.lib"
+WRAPPER="$REPO_ROOT/native/build/wrapclang/libcef_dll_wrapper.lib"
 OUT_DIR="$REPO_ROOT/native/build"
 BSDIFF_DIR="$REPO_ROOT/vendor/bsdiff"
 MAC_SRC="$SCRIPT_DIR/../mac"
@@ -33,15 +33,14 @@ if ! command -v "$CXX" >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ ! -f "$WRAPPER" ]; then
-  echo "libcef_dll_wrapper.lib not found -- build it first (see header comment)" >&2
-  exit 1
-fi
+# Build the wrapper first on every invocation; wrap_direct is idempotent and
+# fast enough (single TU per file) to keep scripts simple.
+bash "$SCRIPT_DIR/wrap_direct.sh"
 
 mkdir -p "$OUT_DIR"
 
-# clang-cl + MSVC ABI. /GR- /EHs-c- (-fno-rtti/-fno-exceptions) match the
-# mac flags and CEF's own build. The CEF headers need _WIN32_WINNT to opt
+# clang-cl + MSVC ABI. /GR is required (CEF's CefRefPtr/RTTI layout);
+# /EHs-c- matches the mac flags. The CEF headers need _WIN32_WINNT to opt
 # into modern APIs (GetDpiForWindow etc.).
 COMMON_FLAGS=(
   /std:c++20 /GR /EHs-c- /O2 /D_UNICODE /DUNICODE
@@ -77,7 +76,7 @@ COMMON_FLAGS=(
   "/Fo$OUT_DIR/subprocess_main.obj" "$MAC_SRC/subprocess_main.cpp"
 "$CXX" /nologo "/Fe$OUT_DIR/bunium_subprocess.exe" \
   "$OUT_DIR/subprocess_main.obj" \
-  "$WRAPPER" "$CEF_RELEASE/libcef.lib"
+  "$WRAPPER" "$CEF_RELEASE/libcef.lib" user32.lib
 
 # CEF Windows ships its runtime DLLs + resources flat in Release/ -- the GPU
 # and renderer subprocesses find them via the executable's directory, so

@@ -24,6 +24,8 @@ export default defineConfig({
           { text: "<bunium-webview> tag", link: "/guide/webview" },
           { text: "System features", link: "/guide/system" },
           { text: "Packaging", link: "/guide/packaging" },
+          { text: "Windows", link: "/guide/windows" },
+          { text: "Dev from macOS", link: "/guide/dev-from-mac" },
           { text: "Auto-update", link: "/guide/updates" },
           { text: "Publishing", link: "/guide/publishing" },
         ],

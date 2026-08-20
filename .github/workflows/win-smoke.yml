@@ -1,0 +1,96 @@
+name: Windows smoke
+
+# Builds the native Windows stack (clang-cl only) and runs the basic-window
+# example as a smoke test on every PR touching native/src and on main pushes.
+# Lets macOS devs verify the Windows port without a local Windows box —
+# see docs/guide/dev-from-mac.md.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "native/**"
+      - "src/**"
+      - "package.json"
+      - "bun.lock"
+      - ".github/workflows/win-smoke.yml"
+  pull_request:
+    paths:
+      - "native/**"
+      - "src/**"
+      - "package.json"
+      - "bun.lock"
+      - ".github/workflows/win-smoke.yml"
+
+jobs:
+  build-and-smoke:
+    runs-on: windows-latest
+    env:
+      # The CEF windows64 minimal-distribution zip for the version pinned in
+      # vendor/cef-windows-x64/include/cef_version.h. Set the repo variable
+      # CEF_ZIP_URL to override (Actions -> Settings -> Variables); the
+      # fallback below drifts as new builds land.
+      CEF_ZIP_URL: ${{ vars.CEF_ZIP_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM (clang-cl)
+        shell: bash
+        run: |
+          if command -v clang-cl >/dev/null 2>&1; then
+            echo "clang-cl already present"
+          else
+            choco install llvm -y --no-progress
+            # choco/scoop refresh PATH for their own session only; add LLVM's bin
+            echo "${ProgramFiles//\\//}/LLVM/bin" >> "$GITHUB_PATH"
+          fi
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Fetch CEF distro (git-ignored)
+        shell: bash
+        run: |
+          if [ -d vendor/cef-windows-x64/Release ]; then
+            echo "CEF distro already present"
+            exit 0
+          fi
+          url="${CEF_ZIP_URL:-https://cef-builds.spotifycdn.com/cef_binary_151.3.18+gbeff58d+chromium-151.0.7922.138_windows64_minimal.zip}"
+          echo "downloading CEF from $url"
+          curl -L --fail -o cef.zip "$url" || {
+            echo "::error::CEF download failed. Update CEF_ZIP_URL or the"
+            echo "::error::fallback URL in this workflow to match the version"
+            echo "::error::in vendor/cef-windows-x64/include/cef_version.h"
+            exit 1
+          }
+          # Distro zips contain a single cef_binary_*/ dir; normalize to
+          # vendor/cef-windows-x64.
+          mkdir -p vendor
+          # tar (bsdtar) unzips on Git-for-Windows bash; unzip(1) is not guaranteed
+          tar -xf cef.zip -C vendor
+          inner=$(ls -d vendor/cef_binary_* | head -1)
+          [ -n "$inner" ] || { echo "::error::unexpected zip layout"; exit 1; }
+          rm -rf vendor/cef-windows-x64
+          mv "$inner" vendor/cef-windows-x64
+
+      - name: Build native stack
+        shell: bash
+        run: bash native/win/build.sh
+
+      - name: Smoke — basic-window example
+        shell: bash
+        timeout-minutes: 3
+        run: |
+          export PATH="$GITHUB_WORKSPACE/native/build:$PATH"
+          bun examples/basic-window.ts 2>&1 | tee smoke.log
+          grep -q "frameCount" smoke.log
+
+      - name: Upload logs + artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: win-smoke-logs
+          path: |
+            native/build/debug.log
+            smoke.log
+            !native/build/**/*.dll
+          retention-days: 7

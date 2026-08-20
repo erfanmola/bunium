@@ -874,8 +874,36 @@ X11/Wayland windowing + CEF Linux distro. Repeat Phase 0-1 validation steps for 
 
 ## Phase 7 — Windows port
 
-Win32 windowing + CEF Windows distro. Sandbox model differs from macOS/Linux — needs its own
-research pass, not just a port of the macOS `no_sandbox` shortcut.
+**Status: multi-process CEF window works (2026-08-20).**
+
+`bash native/win/build.sh` (clang-cl only; see `native/win/wrap_direct.sh`) builds
+`bunium_shim.dll` + `bunium_subprocess.exe`; `bun examples/basic-window.ts` opens a
+window, frames fire, close + shutdown are clean (run it with
+`native/build` on `PATH` for dlopen order, see `docs/guide/windows.md`).
+
+Root-caused + fixed the original child-process crash (every GPU/network/storage/
+renderer child died with a corrupt-vtable AV at 0xC0000005): the distro's
+cmake-built `libcef_dll_wrapper` compiles with `CEF_USE_BOOTSTRAP`, and children
+crash when the wrapper has that define. The clang-cl wrapper in `wrap_direct.sh`
+(no bootstrap) yields healthy multi-process children. Debug trail: procdump
+minidumps → cdb `!analyze`, `/Zi` wrapper build for symbolicated stacks.
+
+### What works
+- Browser + subprocess multi-process (renderer/GPU/network/storage all live).
+- `bun examples/basic-window.ts` (frames + clean close).
+- `scheme-handler-test.ts` (custom `bunium://` scheme, pixel readback verifies)
+- `transparent-window-test.ts` (corner opaque / middle transparent)
+- `bunium_init` + view creation under the C harness `bringup_test`.
+
+### Remaining follow-ups
+- Sweep the rest of `examples/` (ipc, sublayer, frameless-resize, bsdiff-test,
+  tray/menu/notifications once Phase-7 system stubs land).
+- Real `native/win/bunium_system_win.cc` implementations (menu, dialogs, tray,
+  notifications) — Phase 7's main remaining body of work.
+- Windows smoke CI + mac-side remote runner: see `docs/guide/dev-from-mac.md`
+  and `.github/workflows/win-smoke.yml`.
+- Packaging: Phase 8's Windows flow (port `packaging/mac/package.sh`; signing
+  story for Windows is TLS-code-signing oriented, not needed for local use).
 
 ## Phase 8 — Packaging, signing, notarization, build pipeline
 
