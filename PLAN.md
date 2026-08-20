@@ -1030,6 +1030,15 @@ code-signing orientation, needs a cert; nothing needed for local use), custom
 - **CI**: per-OS runners (can't cross-build a signed DMG from Linux CI); Linux
   packaging still to be written (Phase 8's AppImage or deb/rpm intent). Windows
   packaging is CI-covered (win-smoke) as of 2026-08-21.
+- **Windows arm64 (future, not blocking)**: the x64 package already runs on
+  arm64 Windows via built-in emulation (Prism). For true native arm64, Parallels
+  on an M-series Mac runs arm64 Windows natively (Apple Virtualization
+  framework, not a second emulation layer) -- the natural build/test env: real
+  hardware, no cross-compile. Recipe when we take it: arm64 CEF distro
+  (`cef_binary_*_windowsarm64_minimal.zip`) + clang-cl
+  `--target=aarch64-pc-windows-msvc` + bun win-arm64 runtime (verify bun
+  publishes one before committing) + `bunium-win32-arm64` package. Win CI then
+  adds an arm64 runner step; Parallels stays the pre-CI validation box.
 - **Debug env vars added while diagnosing** (keep, env-gated): `BUNIUM_BUNDLE_DEBUG`
   (mainBundle identity dump in browser + subprocess), `BUNIUM_CEF_VERBOSE` (CEF
   log_severity INFO + [paint]/[load-_]/[scheme-_] markers + renderer
