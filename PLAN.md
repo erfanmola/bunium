@@ -874,7 +874,8 @@ X11/Wayland windowing + CEF Linux distro. Repeat Phase 0-1 validation steps for 
 
 ## Phase 7 — Windows port
 
-**Status: multi-process CEF window works (2026-08-20).**
+**Status: multi-process CEF window works (2026-08-20); real system surface +
+full example sweep green (2026-08-21).**
 
 `bash native/win/build.sh` (clang-cl only; see `native/win/wrap_direct.sh`) builds
 `bunium_shim.dll` + `bunium_subprocess.exe`; `bun examples/basic-window.ts` opens a
@@ -891,17 +892,44 @@ minidumps → cdb `!analyze`, `/Zi` wrapper build for symbolicated stacks.
 ### What works
 - Browser + subprocess multi-process (renderer/GPU/network/storage all live).
 - `bun examples/basic-window.ts` (frames + clean close).
-- `scheme-handler-test.ts` (custom `bunium://` scheme, pixel readback verifies)
-- `transparent-window-test.ts` (corner opaque / middle transparent)
-- `bunium_init` + view creation under the C harness `bringup_test`.
+- Full `examples/` sweep (2026-08-21, Windows 11 26100, bun 1.3.11):
+  - Window/lifecycle: `close-event`, `loadurl`, `frameless-*`, `resize-plumbing`,
+    `resizable-constraints`, `transparent-window`, `basic-window`.
+  - Rendering/IPC: `scheme-handler`, `draggable-regions`, `ipc-bounds`,
+    `ipc-latency`, `keyboard`, `mouse-click`, `multi-layer`, `raf-cadence-diag`,
+    `sublayer-hit`, `dpr-and-screenshot`, `color-scheme`, `scroll-timing`.
+  - webview: `webview-{clip,clip-hit,element,hit,stacking}`.
+  - typed IPC both directions, `bsdiff`, `update-journal`, `update-e2e`,
+    `relaunch`, `vite-dev`.
+  - System surface (this session): `system-menu-tray` (submenu fix),
+    `system-notifications` (balloons), `system-tray-icon-click` (symbol
+    ignored on Windows by design). `system-dialogs` is interactive (modal
+    native pickers) — verified manually; the TaskDialog message variant falls
+    back to `MessageBoxW` when comctl32 v6 isn't available (no manifest
+    in the dev host process).
+  - Keyboard fix (real regression): OSR renderer dropped key input until the
+    host claimed focus (`SetFocus` at attach + lazily in dispatch) and DOM
+    `key` derived from `windows_key_code`, so CHAR events with a zero key code
+    now fall back to the character itself (`e.key === 'A'` works again).
+  - `vite-dev`: initial serve + post-edit pickup verified. HMR *push* is
+    best-effort — `bunx vite` under the Bun runtime on Windows drives a
+    rolldown-vite whose watcher stays silent (OS `fs.watch` fires fine),
+    so the test falls back to a plain `loadURL()` reload and warns.
+  - Environment-limited: `color-scheme-live-test.ts` is mac-only
+    (`defaults`/`osascript`) and stays off the Windows run matrix.
+- Real `native/win/bunium_system_win.cc` (menu/tray/notify/dialogs) + shared
+  header; spec-driven HMENU app menu per window, NOTIFYICONDATA v4 tray with
+  `TrackPopupMenu`, shell-balloon notifications, IFileDialog/TaskDialog on
+  detached worker threads (never blocks the JS pump). `comctl32.lib` static
+  link avoided (ordinal-import breakage → runtime `LoadLibraryW` + probe).
+- Windows smoke CI + mac-side remote runner: `docs/guide/dev-from-mac.md`,
+  `.github/workflows/win-smoke.yml` (`PROGRAMFILES` case fixed),
+  `scripts/win-remote.sh` (remote `$PATH`/`$HOME` expansion fixed).
 
 ### Remaining follow-ups
-- Sweep the rest of `examples/` (ipc, sublayer, frameless-resize, bsdiff-test,
-  tray/menu/notifications once Phase-7 system stubs land).
-- Real `native/win/bunium_system_win.cc` implementations (menu, dialogs, tray,
-  notifications) — Phase 7's main remaining body of work.
-- Windows smoke CI + mac-side remote runner: see `docs/guide/dev-from-mac.md`
-  and `.github/workflows/win-smoke.yml`.
+- Verify `TaskDialogIndirect` end-to-end once a packaged app carries a
+  comctl32 v6 manifest (Phase 8); today the message path hits the
+  `MessageBoxW` fallback by design.
 - Packaging: Phase 8's Windows flow (port `packaging/mac/package.sh`; signing
   story for Windows is TLS-code-signing oriented, not needed for local use).
 

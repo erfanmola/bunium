@@ -378,6 +378,15 @@ BUNIUM_EXPORT void bunium_attach_window(void *view_handle,
   // logical-pixel resolution, upscaled onto a physically-2x layer. See
   // BuniumClient::GetScreenInfo/SetDeviceScaleFactor, bunium_common.h.
   view->client->SetDeviceScaleFactor(bunium_window_get_scale(window_handle));
+  // OSR hosts don't become focused implicitly: the renderer drops keyboard
+  // input unless the widget is told it has focus. macOS gets this from the
+  // NSWindow first-responder chain; Windows has no such automatic path, so
+  // claim focus here (no-op once already focused, and lets the synthetic
+  // dispatch-ABI key tests work without a real focus gesture). The CEF
+  // browser may not exist yet (it's created after the first navigation
+  // starts), in which case dispatch_key_event claims focus lazily instead.
+  if (auto browser = view->client->browser())
+    browser->GetHost()->SetFocus(true);
 }
 
 BUNIUM_EXPORT void bunium_pump_native_events() { bunium_window_pump_events(); }
@@ -689,9 +698,18 @@ BUNIUM_EXPORT void bunium_dispatch_key_event(void *window_handle,
   event.type = static_cast<cef_key_event_type_t>(event_type);
   event.modifiers = static_cast<uint32_t>(modifiers);
   event.windows_key_code = key_code;
-  event.native_key_code = key_code;
+  // Windows derives the DOM `key` from windows_key_code, not from
+  // `character` (macOS does the opposite). CHAR events that arrived without
+  // a key code (the synthetic dispatch ABI passes 0, and macOS virtual
+  // keycodes don't map to Windows VKs anyway) would yield `Unidentified`/
+  // empty key down in the renderer -- fall back to the character itself so
+  // `e.key`/`e.charCode` carry the printable char.
+  if (key_code == 0 && character != 0)
+    event.windows_key_code = character;
+  event.native_key_code = event.windows_key_code;
   event.character = character;
   event.unmodified_character = character;
+  browser->GetHost()->SetFocus(true);
   browser->GetHost()->SendKeyEvent(event);
 }
 

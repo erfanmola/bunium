@@ -4,11 +4,10 @@
 // native-side processing instead? Page logs its own rAF tick gaps via
 // console.log, forwarded to our stderr via the new OnConsoleMessage hook.
 import { dlopen, FFIType } from "bun:ffi";
-
-const repoRoot = new URL("..", import.meta.url).pathname;
-const lib = dlopen(`${repoRoot}native/build/bunium_shim.dylib`, {
+import { paths } from "../src/paths";
+const lib = dlopen(paths.shim, {
   bunium_init: {
-    args: [FFIType.cstring, FFIType.cstring, FFIType.cstring],
+    args: [FFIType.cstring, FFIType.cstring, FFIType.cstring, FFIType.cstring],
     returns: FFIType.i32,
   },
   bunium_do_message_loop_work: { args: [], returns: FFIType.void },
@@ -34,11 +33,11 @@ function cstr(s: string) {
   return Buffer.from(`${s}\0`);
 }
 
-const frameworkDir = `${repoRoot}vendor/cef-macosarm64/Release/Chromium Embedded Framework.framework`;
 const ok = lib.symbols.bunium_init(
-  cstr(`${repoRoot}native/build/bunium_subprocess`),
-  cstr(frameworkDir),
-  cstr(`${frameworkDir}/Resources`),
+  cstr(paths.subprocess),
+  cstr(paths.frameworkDir),
+  cstr(paths.resourcesDir),
+  cstr(""),
 );
 if (!ok) throw new Error("init failed");
 

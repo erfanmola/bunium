@@ -40,6 +40,8 @@
 #include <string>
 #include <vector>
 
+#include "bunium_system_win.h"
+
 // Implemented in bunium_shim.cpp, linked into the same DLL -- forwards raw
 // Win32 mouse events to whichever CefBrowser/CEF view is attached to one of
 // our window/sublayer handles. See bunium_shim.cpp for the hit-testing and
@@ -449,6 +451,17 @@ LRESULT CALLBACK BuniumWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       DestroyWindow(hwnd);
       return 0;
 
+    case WM_COMMAND:
+      // Menu-item selection from the window's menu bar (bunium windows have
+      // no child controls, so HIWORD(wParam)==0 always means a menu item).
+      // Forward the app-assigned id to the system bus -- the Win32 analogue
+      // of the mac NSMenuItem.tag dispatcher.
+      if (HIWORD(wp) == 0) {
+        BuniumSystemForwardMenuCommand(static_cast<int>(LOWORD(wp)));
+        return 0;
+      }
+      break;
+
     case WM_DESTROY:
       if (h) h->closed = true;
       if (!h->is_sublayer) PostQuitMessage(0);
@@ -535,6 +548,16 @@ void DeleteHandle(BuniumWinHandle* h) {
   delete h;
 }
 
+}  // namespace
+
+void BuniumForEachPrimaryWindow(void (*fn)(HWND, void*), void* ctx) {
+  for (auto* h : g_all) {
+    if (!h->is_sublayer && h->hwnd && IsWindow(h->hwnd)) fn(h->hwnd, ctx);
+  }
+}
+
+namespace {
+
 HWND CreateWindowHwnd(BuniumWinHandle* h, int phys_w, int phys_h,
                       DWORD style, DWORD ex_style) {
   // One class name per window keeps per-instance WndProc dispatch trivial;
@@ -603,6 +626,9 @@ __declspec(dllexport) void* bunium_window_create(int width, int height,
 
   ShowWindow(hwnd, SW_SHOW);
   UpdateWindow(hwnd);
+  // Attach the application menu bar (if one was registered) -- framed
+  // windows show it; WS_POPUP frameless windows ignore SetMenu silently.
+  BuniumApplyAppMenu(hwnd);
   return h;
 }
 

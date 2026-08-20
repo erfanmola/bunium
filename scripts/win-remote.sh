@@ -46,10 +46,10 @@ sync_tree() {
 # docs/guide/windows.md -> "DLL search-order gotcha").
 build_and_smoke() {
   ssh "$HOST" \
-    "cd '$REMOTE_DIR' && \
-     export PATH='$REMOTE_DIR/native/build:/c/Program Files/LLVM/bin:\$PATH' && \
-     bash native/win/build.sh 2>&1 | tail -5 && \
-     bun examples/basic-window.ts 2>&1 | tee smoke.log"
+    "cd \$HOME/$REMOTE_DIR && "\
+    "export PATH=\"\$PWD/native/build:/c/Program Files/LLVM/bin:\$PATH\" && "\
+    "bash native/win/build.sh 2>&1 | tail -5 && "\
+    "bun examples/basic-window.ts 2>&1 | tee smoke.log"
 }
 
 case "$MODE" in

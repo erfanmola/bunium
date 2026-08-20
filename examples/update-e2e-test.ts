@@ -163,6 +163,9 @@ const feedUrl = `http://127.0.0.1:${server.port}`;
   const result = await updater.check({
     feedUrl,
     currentVersion: "1.0.0", // two versions behind the manifest's fromVersion
+    channel: "stable",
+    platform: "mac",
+    arch: "arm64",
   });
   check(result.status === "update-available", "full: update available");
   if (result.status === "update-available") {
@@ -210,6 +213,9 @@ const feedUrl = `http://127.0.0.1:${server.port}`;
   const result = await updater.check({
     feedUrl,
     currentVersion: "1.0.1",
+    channel: "stable",
+    platform: "mac",
+    arch: "arm64",
   });
   check(result.status === "update-available", "corrupt: update available");
   if (result.status === "update-available") {

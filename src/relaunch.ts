@@ -38,12 +38,33 @@ export interface RelaunchOptions {
  * a bare integer would mean seconds, not ms -- the ms values callers think
  * in would sleep that many *seconds* per poll). macOS/Linux /bin/sh `sleep`
  * both accept fractions.
+ *
+ * Windows exception: Git Bash's `kill -0` resolves MSYS PIDs, but callers
+ * pass real Win32 PIDs (from Bun.spawn), so it would always say "dead" and
+ * exec prematurely. Use PowerShell's Get-Process (Win32 PID namespace) for
+ * the wait instead -- one invocation that polls internally with the same
+ * millisecond interval.
  */
 export function buildRelaunchCommand(
   parentPid: number,
   command: string[],
   pollIntervalMs = 200,
 ): string[] {
+  if (process.platform === "win32") {
+    const shim =
+      'powershell -NoProfile -NonInteractive -Command "' +
+      "while (Get-Process -Id $1 -ErrorAction SilentlyContinue) " +
+      '{ Start-Sleep -Milliseconds $2 }\"; shift 2; exec "$@"';
+    return [
+      "sh",
+      "-c",
+      shim,
+      "bunium-relaunch",
+      String(parentPid),
+      String(Math.round(pollIntervalMs)),
+      ...command,
+    ];
+  }
   const intervalSecs = (pollIntervalMs / 1000).toFixed(3);
   const shim =
     'while kill -0 "$1" 2>/dev/null; do sleep "$2"; done; shift 2; exec "$@"';
