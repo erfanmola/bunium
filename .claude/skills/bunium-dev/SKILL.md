@@ -125,10 +125,12 @@ cross-platform packaging/signing/updates, native OS color-scheme sync, a typed I
   Windows port's bootstrap-flag mismatch (wrapper and linking code must share one toolchain),
   different root cause here (compiler vendor, not a CEF build define).
   `native/mac/bunium_shim.cpp`/`subprocess_main.cpp`/`bunium_bsdiff_wrap.mm` compile unchanged
-  (already proven platform-agnostic by Windows); only `bunium_window_linux.cc` (real Xlib
-  window + sublayers, XPutImage software blit, X11 Shape extension for sublayer clipping, no
-  DPI scaling yet) and `bunium_system_linux_stub.cc` (honest no-op Phase 5 stubs -- tray/menu/
-  notify/dialogs not ported yet) are Linux-specific.
+  (already proven platform-agnostic by Windows); Linux-specific sources: `bunium_window_linux.cc`
+  (real Xlib window + sublayers, XPutImage software blit, X11 Shape extension for sublayer
+  clipping, no DPI scaling yet), `bunium_system_events_linux.cc` (shared system-event inbox),
+  `bunium_system_notify_linux.cc` (real D-Bus notifications), `bunium_system_dialogs_linux.cc`
+  (real GTK dialogs), `bunium_system_tray_linux.cc` (real D-Bus StatusNotifierItem tray), and
+  `bunium_system_linux_stub.cc` (menu only -- deliberately deferred, see below).
 - **Chrome-runtime pak/locale files resolve relative to libcef.so's own directory
   (`base::PathService::Get(base::DIR_MODULE)`/dladdr), NOT via `CefSettings.resources_dir_path`
   -- a real startup-crashing bug, root-caused via gdb+strace.** Every window-creating example
@@ -156,14 +158,40 @@ cross-platform packaging/signing/updates, native OS color-scheme sync, a typed I
   binary file` + a GPU-process-crash loop until `bun run build:native:mac` was rerun. Keep
   Linux's output dir separate; any future platform port sharing this bind-mounted checkout
   needs the same treatment.
+- **Phase 5 system surface: notify/dialogs/tray are real, menu is deliberately deferred.**
+  Notifications = real org.freedesktop.Notifications D-Bus client, non-blocking `Notify()` +
+  background dispatch thread + `ActionInvoked` click round-trip. Dialogs = real
+  `GtkFileChooserDialog`/`GtkMessageDialog`, response-signal driven. Tray = real
+  org.kde.StatusNotifierItem D-Bus service (properties + Activate/ContextMenu/Scroll methods +
+  best-effort `StatusNotifierWatcher` registration). **Two real deadlock/crash bugs found and
+  fixed, both worth remembering for any future GTK/D-Bus work here:** (1) GTK dialogs originally
+  spawned their own thread running `gtk_main()` -- crashed immediately (SIGTRAP inside
+  `base::MessagePumpGlib::Run`) because CEF's own browser-process UI thread already runs a
+  GLib-based pump on the process's default `GMainContext` (bunium uses
+  `multi_threaded_message_loop=false`), and GLib aborts when two threads fight over the same
+  default context. Fixed: no dedicated thread, `gtk_init()` once on the calling (CEF UI) thread,
+  synchronous widget creation -- CEF's already-running pump dispatches GTK events for free. (2)
+  Tray's `dbus_bus_request_name()`/`dbus_bus_release_name()` are `*_and_block`-style calls that
+  deadlocked every time against the background D-Bus dispatch thread also reading the same
+  connection -- fixed by sending `RequestName`/`ReleaseName` as plain non-blocking messages
+  instead. **Menu is genuinely deferred, not an oversight**: `bunium_window_linux.cc` is raw
+  Xlib with no GTK/Qt toolkit window to attach a menu bar to, and there's no single
+  cross-desktop "global menu" convention (GNOME's `com.canonical.AppMenu` D-Bus protocol is
+  GNOME-specific; most other DEs want an in-window menu bar instead) -- real design work, not a
+  quick vertical slice like the other three. All three real ones verified end-to-end (not just
+  no-crash) via throwaway fake D-Bus services: `docker/linux/fake_notify_daemon.c` and
+  `docker/linux/fake_sni_watcher.c` (both dev/test-only, not shipped/built by
+  `native/linux/build.sh`) -- proved Notify/ActionInvoked and RegisterStatusNotifierItem/
+  Properties.GetAll/Activate all round-trip correctly.
 - **35/37 examples PASS** (2026-08-22, linuxarm64, bun 1.4.0) -- every window/IPC/webview/
-  system-stub/update example green. Two non-bugs: `color-scheme-live-test.ts` is inherently
+  system/update example green. Two non-bugs: `color-scheme-live-test.ts` is inherently
   mac-only (`defaults`/`osascript`), stays off the run matrix same as it already does for
   Windows. `vite-dev-test.ts` failed once on a stone-cold container (`bunx vite`'s first-ever
   invocation resolves ~110 packages, blowing the test's 10s ready-timeout) but passed cleanly
   once `bunx`'s cache was warm -- not a bunium bug.
 - **v1 scope gaps, deliberate** (matches "repeat Phase 0-1, not full parity" plan note): X11
-  only (no Wayland); no DPI/HiDPI scaling; Phase 5 system surface is stub-only; no synthetic
+  only (no Wayland); no DPI/HiDPI scaling; native menu bar deferred (see above); tray `setIcon`
+  (arbitrary image file) is a no-op, only `setSymbol` (icon-theme name) works; no synthetic
   resize-edge/draggable-region hit-testing for frameless windows; sublayers paint opaque only
   (no alpha compositing, needs a real compositor); no packaging/distribution mechanism yet
   (`docker/linux/` is dev/test only). **Not a gap:** the mac `OnBeforeContextMenu` right-click-

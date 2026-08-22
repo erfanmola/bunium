@@ -883,12 +883,14 @@ mac/win -- prints a PASS/FAIL summary).
 
 `native/linux/build.sh` builds `bunium_shim.so` + `bunium_subprocess` from
 `native/mac/bunium_shim.cpp`/`subprocess_main.cpp`/`bunium_bsdiff_wrap.mm` unchanged (already
-proven platform-agnostic by the Windows port) plus Linux-only `bunium_window_linux.cc` (real
-Xlib top-level window + sublayers, XPutImage software blit, X11 Shape extension for sublayer
-clipping, no DPI scaling yet) and `bunium_system_linux_stub.cc` (honest no-op system-surface
-stubs -- Phase 5 tray/menu/notify/dialogs not ported yet, same "repeat Phase 0-1 first" scoping
-mac/win used). Built with `g++`/`gcc`, not clang -- see the compiler-vendor ABI mismatch note
-below.
+proven platform-agnostic by the Windows port) plus Linux-only sources: `bunium_window_linux.cc`
+(real Xlib top-level window + sublayers, XPutImage software blit, X11 Shape extension for
+sublayer clipping, no DPI scaling yet), `bunium_system_events_linux.cc` (shared system-event
+inbox), `bunium_system_notify_linux.cc` (real org.freedesktop.Notifications D-Bus client),
+`bunium_system_dialogs_linux.cc` (real GTK file chooser/message dialogs),
+`bunium_system_tray_linux.cc` (real org.kde.StatusNotifierItem D-Bus service), and
+`bunium_system_linux_stub.cc` (menu only -- see the deferred-menu note below). Built with
+`g++`/`gcc`, not clang -- see the compiler-vendor ABI mismatch note below.
 
 **Two real bugs found and fixed during bring-up:**
 - **Cross-compiler C++ ABI mismatch (build-time).** Building `bunium_shim.cpp` with clang++
@@ -951,13 +953,72 @@ element,hit,stacking}`, typed IPC both directions, `bsdiff`/`update-journal`/`up
   Linux-specific work needed, confirmed by inspection (not yet exercised by a real right-click,
   same untestable-without-a-desktop category as mac's own verification of it).
 
+**Phase 5 system surface (2026-08-22): notifications, dialogs, and tray are real; menu is
+deferred.**
+
+- **Notifications** (`native/linux/bunium_system_notify_linux.cc`) -- real
+  org.freedesktop.Notifications D-Bus client (libdbus-1, no GTK dependency). `Notify()` sent
+  non-blocking; a background thread owns the connection's read/write/dispatch loop for the
+  process's lifetime; `ActionInvoked` signals translate the daemon's own notification id back to
+  bunium's app-assigned id via a small map, delivered through the existing system-event bus.
+  Degrades to a silent no-op when no session bus is reachable.
+- **Dialogs** (`native/linux/bunium_system_dialogs_linux.cc`) -- real `GtkFileChooserDialog`
+  (open/save) and `GtkMessageDialog` (message box), driven by the "response" signal (never
+  `gtk_dialog_run()`, so nothing blocks the JS pump). **Real bug found and fixed:** an initial
+  version spawned its own thread running `gtk_main()`, since GTK requires all UI calls on the
+  thread that called `gtk_init()`. This crashed immediately (SIGTRAP inside
+  `base::MessagePumpGlib::Run`, confirmed via gdb) -- CEF's own browser-process UI thread
+  already runs a GLib-based message pump on the process's default `GMainContext` (bunium runs
+  CEF with `multi_threaded_message_loop=false`, so dialog calls arrive on that same thread), and
+  GLib aborts when two threads try to own the same default context concurrently. Fixed by not
+  spawning a thread at all: `gtk_init()` once on the calling thread, widgets created
+  synchronously (still non-blocking), and CEF's already-running GLib pump dispatches GTK's
+  events for free. v1 simplification: GTK's `GtkFileChooserAction` is one enum value, not
+  independent flags like mac's `canChooseFiles`/`canChooseDirectories`, so `canChooseDirectories`
+  selects `GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER` outright rather than a mixed picker.
+- **Tray** (`native/linux/bunium_system_tray_linux.cc`) -- real org.kde.StatusNotifierItem D-Bus
+  service: each tray registers a unique bus name + object path, serves its
+  Category/Id/Title/Status/IconName/Menu properties via `org.freedesktop.DBus.Properties`, and
+  handles Activate/SecondaryActivate/ContextMenu/Scroll methods, registering with
+  `org.kde.StatusNotifierWatcher` on creation (best-effort -- no watcher exists without a real
+  desktop panel). **Real bug found and fixed:** `dbus_bus_request_name()`/
+  `dbus_bus_release_name()` are `*_and_block`-style blocking calls that do their own synchronous
+  read loop -- calling them while the background dispatch thread also owns the connection's
+  read/dispatch loop deadlocked every single time (reproduced consistently). Fixed by sending
+  `RequestName`/`ReleaseName` as plain non-blocking messages instead, matching the
+  fire-and-forget pattern `RegisterStatusNotifierItem` already used. v1 scope: `IconName` only
+  (`setSymbol` -- a real freedesktop icon-theme name, won't resolve for the SF-Symbol-style names
+  cross-platform example code passes, same "platform interprets its own idiom" precedent Windows
+  already established); `setIcon` (arbitrary image file) is a documented no-op -- real support
+  needs `GdkPixbuf`-decoding into the SNI `IconPixmap` variant, not attempted this pass.
+  `setMenu` is a no-op since native menu is still stub-only (below).
+- **Menu is deliberately deferred, not just unimplemented-by-oversight.** Linux has no
+  NSMenu/HMENU equivalent bunium can attach without real design work: `bunium_window_linux.cc`
+  is a raw Xlib window (no GTK/Qt toolkit window at all), and there is no single cross-desktop
+  "global application menu" convention the way macOS has one -- GNOME/Unity's own appmenu
+  protocol (`com.canonical.AppMenu` via D-Bus) is GNOME-specific, and most other Linux DEs (KDE,
+  XFCE, etc.) have no native equivalent at all, expecting an in-window `GtkMenuBar`/Qt menu bar
+  instead. Building this properly means either (a) growing a real GTK/Qt toolkit window
+  alongside the existing Xlib one just to host a menu bar, or (b) a DE-specific D-Bus protocol
+  with no universal fallback -- both are real architectural decisions, not a quick vertical
+  slice like notify/dialogs/tray were. Tracked as open Phase 6 v2 scope.
+- **All three real (notify/dialogs/tray) verified end-to-end, not just no-crash**, via
+  throwaway dev/test-only fake D-Bus services (not shipped, not built by
+  `native/linux/build.sh`): `docker/linux/fake_notify_daemon.c` (owns
+  `org.freedesktop.Notifications`, replies to `Notify()`, emits `ActionInvoked` -- proved
+  click delivery round-trips into JS) and `docker/linux/fake_sni_watcher.c` (owns
+  `org.kde.StatusNotifierWatcher`, captures the registered item, calls `Properties.GetAll`
+  and `Activate()` back on it -- proved property serving and click delivery both round-trip).
+  Full `examples/` sweep still 35/37 (same two environment-limited non-bugs as before).
+
 **Known v1 scope gaps (deliberate, matches the "repeat Phase 0-1, not full parity" plan note):**
 - X11 only, no Wayland.
 - No DPI/HiDPI scaling (`bunium_window_get_scale` always returns 1.0).
 - Native context-menu suppression (`OnBeforeContextMenu`) already applies via shared
   `bunium_common.h` (see above) -- not a gap, just unverified by an actual right-click yet.
-- Phase 5 system surface (tray/menu/notifications/dialogs) is stub-only (honest no-ops, not
-  missing symbols -- `native/linux/bunium_system_linux_stub.cc`).
+- Native menu bar is stub-only, deferred pending real design work (see above).
+- Tray `setIcon` (arbitrary image file) is a documented no-op; only `setSymbol` (icon-theme
+  name) works.
 - No synthetic resize-edge/draggable-region hit-testing for frameless windows (mac's
   `BuniumContentView` resize-bar code not ported).
 - Sublayers paint opaque only, no alpha compositing (needs a running compositor + 32-bit ARGB
