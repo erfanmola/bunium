@@ -13,6 +13,16 @@ XVFB_PID=$!
 sleep 1
 export DISPLAY=:99
 
+# A session D-Bus lets system-notifications-test.ts exercise the real
+# org.freedesktop.Notifications path (see bunium_system_notify_linux.cc);
+# without one it degrades gracefully (no crash, notify silently no-ops) but
+# doesn't prove anything. No notification daemon owns the well-known name
+# here (no GNOME/KDE session) -- see docker/linux/fake_notify_daemon.c for
+# a real end-to-end round-trip check outside this sweep.
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+  eval "$(dbus-launch --sh-syntax)"
+fi
+
 PASS=()
 FAIL=()
 

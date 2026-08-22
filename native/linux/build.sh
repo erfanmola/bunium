@@ -3,10 +3,10 @@
 # inside the bunium-linux-dev container (see docker/linux/) -- reuses
 # native/mac/bunium_shim.cpp, subprocess_main.cpp and bunium_bsdiff_wrap.mm
 # unchanged (already proven platform-agnostic by the Windows port, which
-# compiles the same three files as-is). Only window creation
-# (bunium_window_linux.cc, X11) is Linux-specific -- system tray/menu/
-# notifications/dialogs (Phase 5) are not ported yet, same v1 scope as
-# Phase 6's "repeat Phase 0-1" plan note.
+# compiles the same three files as-is). Linux-specific: window creation
+# (bunium_window_linux.cc, X11) and notifications (bunium_system_notify_
+# linux.cc, D-Bus). System tray/menu/dialogs (rest of Phase 5) are not
+# ported yet -- see PLAN.md Phase 6.
 #
 # Arch-aware like docker/linux/fetch-cef.sh: `uname -m` by default,
 # override with BUNIUM_LINUX_ARCH=arm64|x64. Requires
@@ -79,14 +79,22 @@ CCFLAGS=(-std=c11 -fvisibility=hidden -fPIC)
 "$CXX" "${CXXFLAGS[@]}" -x c++ -I"$CEF_ROOT" -I"$BSDIFF_DIR" \
   -c -o "$OUT_DIR/bunium_bsdiff_wrap.o" "$MAC_SRC/bunium_bsdiff_wrap.mm"
 
-"$CXX" "${CXXFLAGS[@]}" \
+# libdbus-1 (org.freedesktop.Notifications, Phase 5 notifications) via
+# pkg-config -- the dev image's dbus-1.pc lives at the usual multiarch path.
+DBUS_CFLAGS=($(pkg-config --cflags dbus-1))
+DBUS_LIBS=($(pkg-config --libs dbus-1))
+
+"$CXX" "${CXXFLAGS[@]}" "${DBUS_CFLAGS[@]}" \
   -I"$CEF_ROOT" -I"$BSDIFF_DIR" \
   -shared -fPIC -o "$OUT_DIR/bunium_shim.so" \
   "$MAC_SRC/bunium_shim.cpp" "$SCRIPT_DIR/bunium_window_linux.cc" \
+  "$SCRIPT_DIR/bunium_system_events_linux.cc" \
+  "$SCRIPT_DIR/bunium_system_notify_linux.cc" \
   "$SCRIPT_DIR/bunium_system_linux_stub.cc" \
   "$OUT_DIR/bunium_bsdiff_wrap.o" \
   "$OUT_DIR/bsdiff.o" "$OUT_DIR/bspatch.o" \
   "$WRAPPER" -L"$CEF_RELEASE" -lcef -lX11 -lXext -lpthread \
+  "${DBUS_LIBS[@]}" \
   -Wl,-rpath,'$ORIGIN'
 
 "$CXX" "${CXXFLAGS[@]}" \
