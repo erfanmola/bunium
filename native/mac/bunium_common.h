@@ -26,6 +26,7 @@
 #include "include/cef_app.h"
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
+#include "include/cef_context_menu_handler.h"
 #include "include/cef_display_handler.h"
 #include "include/cef_life_span_handler.h"
 #include "include/cef_load_handler.h"
@@ -241,7 +242,8 @@ class BuniumClient : public CefClient,
                      public CefRenderHandler,
                      public CefLifeSpanHandler,
                      public CefDisplayHandler,
-                     public CefLoadHandler {
+                     public CefLoadHandler,
+                     public CefContextMenuHandler {
 public:
   explicit BuniumClient(int width, int height)
       : width_(width), height_(height) {}
@@ -251,6 +253,26 @@ public:
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
   CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
   CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
+  CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override {
+    return this;
+  }
+
+  // CefContextMenuHandler -- without an explicit handler, CEF falls back to
+  // its own native (Views-framework) context menu on right-click, which
+  // isn't supported in windowless/OSR rendering and crashes the whole Bun
+  // process (real repro: two-finger trackpad right-click -> "panic: A C++
+  // exception occurred", an unhandled Cocoa/Views exception propagating
+  // across the FFI boundary). Clearing the model suppresses CEF's default
+  // menu entirely -- bunium doesn't have its own native context-menu API
+  // yet, so "no menu" is the correct minimal behavior until one exists,
+  // not a regression (right-click events still reach the page's own JS
+  // contextmenu handler if any, unaffected by this).
+  void OnBeforeContextMenu(CefRefPtr<CefBrowser> browser,
+                           CefRefPtr<CefFrame> frame,
+                           CefRefPtr<CefContextMenuParams> params,
+                           CefRefPtr<CefMenuModel> model) override {
+    model->Clear();
+  }
 
   // CefDisplayHandler -- page console.log/warn/error forwarded to our own
   // stderr. Was completely silent before this (page JS output had nowhere
