@@ -104,6 +104,64 @@ cross-platform packaging/signing/updates, native OS color-scheme sync, a typed I
   Test scripts must run sequentially; parallel shells are fine. Real apps get a per-app
   `root_cache_path` at packaging time (Phase 8).
 
+## Phase 6 — Linux port (full examples/ sweep green, 2026-08-22)
+
+- **Dev/build/test is Docker-only** (`docker/linux/`) since this session's host is macOS, no
+  native Linux desktop available. `Dockerfile` = arm64 Ubuntu 24.04 (matches Docker Desktop's
+  native platform on Apple Silicon, avoids QEMU) with the clang/cmake/X11-dev/Chromium-runtime-
+  dep/Xvfb toolchain. `fetch-cef.sh` downloads the pinned CEF linuxarm64/linux64 distro (10MB
+  chunks -- this network path caps a single response at 10MB) + builds `libcef_dll_wrapper` via
+  cmake/ninja. `run-examples.sh` runs every `examples/*.ts` sequentially under Xvfb (same
+  ProcessSingleton one-at-a-time rule as every other platform) with a PASS/FAIL summary. Build:
+  `docker build -t bunium-linux-dev -f docker/linux/Dockerfile .` then
+  `docker run --rm -v "$(pwd)":/work -w /work bunium-linux-dev bash docker/linux/fetch-cef.sh`
+  then `... bash native/linux/build.sh` then `... -e LD_LIBRARY_PATH=/work/native/build ...
+  bash docker/linux/run-examples.sh`.
+- **`native/linux/build.sh` builds with g++, not clang++.** CEF's own cmake-built
+  `libcef_dll_wrapper.a` on this Ubuntu image resolves to g++; linking a clang++-compiled
+  `bunium_shim.cpp` against it segfaulted immediately inside `CefInitialize` (confirmed via gdb:
+  a by-value `scoped_refptr<CefApp>` parameter's hidden-reference pointer arrived null/garbage)
+  -- a cross-compiler C++ ABI mismatch, not a bunium logic bug. Same failure class as the
+  Windows port's bootstrap-flag mismatch (wrapper and linking code must share one toolchain),
+  different root cause here (compiler vendor, not a CEF build define).
+  `native/mac/bunium_shim.cpp`/`subprocess_main.cpp`/`bunium_bsdiff_wrap.mm` compile unchanged
+  (already proven platform-agnostic by Windows); only `bunium_window_linux.cc` (real Xlib
+  window + sublayers, XPutImage software blit, X11 Shape extension for sublayer clipping, no
+  DPI scaling yet) and `bunium_system_linux_stub.cc` (honest no-op Phase 5 stubs -- tray/menu/
+  notify/dialogs not ported yet) are Linux-specific.
+- **Chrome-runtime pak/locale files resolve relative to libcef.so's own directory
+  (`base::PathService::Get(base::DIR_MODULE)`/dladdr), NOT via `CefSettings.resources_dir_path`
+  -- a real startup-crashing bug, root-caused via gdb+strace.** Every window-creating example
+  hard-crashed with a release `CHECK` (SIGTRAP, silent -- no stderr message) inside
+  `ChromeMainDelegate::PostEarlyInitialization -> LoadLocalState`. `resources_dir_path` only
+  governs CEF's own resource-bundle delegate; Chrome-runtime's separate resource-bundle init
+  looks for `chrome_100_percent.pak`/`chrome_200_percent.pak`/`resources.pak`/locale paks next
+  to libcef.so itself. Fixed in `native/linux/build.sh`: copy `*.pak` + `locales/` from
+  `vendor/cef-<platform>/Resources/` next to the built shim -- `native/win/build.sh` already
+  did this (for the same reason, just not previously recognized as the same root cause).
+  `icudtl.dat`/`v8_context_snapshot.bin` need the same DIR_MODULE-relative copy (ICU/V8 init).
+  **Any future platform port hitting a silent SIGTRAP/CHECK crash on Chrome-runtime startup
+  should check this first** -- it won't show up in stderr, only via gdb backtrace or strace.
+- **`src/paths.ts` needs an explicit Linux branch -- it silently fell through to the macOS
+  `.dylib` path otherwise** (`ERR_DLOPEN_FAILED: invalid ELF header`). Fixed:
+  `native/build/bunium_shim.so` dev-tree path, Windows-style flat Release/Resources CEF layout
+  (no framework bundle on Linux either), arch-derived `vendor/cef-linuxarm64`/`cef-linux64` dir
+  matching `native/linux/build.sh`'s own convention, plus a `bunium-linux-<arch>` platform-
+  package branch for Phase 11 parity.
+- **35/37 examples PASS** (2026-08-22, linuxarm64, bun 1.4.0) -- every window/IPC/webview/
+  system-stub/update example green. Two non-bugs: `color-scheme-live-test.ts` is inherently
+  mac-only (`defaults`/`osascript`), stays off the run matrix same as it already does for
+  Windows. `vite-dev-test.ts` failed once on a stone-cold container (`bunx vite`'s first-ever
+  invocation resolves ~110 packages, blowing the test's 10s ready-timeout) but passed cleanly
+  once `bunx`'s cache was warm -- not a bunium bug.
+- **v1 scope gaps, deliberate** (matches "repeat Phase 0-1, not full parity" plan note): X11
+  only (no Wayland); no DPI/HiDPI scaling; no native context-menu suppression (mac's
+  `OnBeforeContextMenu` right-click-crash fix from this same session not ported -- unconfirmed
+  whether Linux has the same crash, worth checking); Phase 5 system surface is stub-only;
+  no synthetic resize-edge/draggable-region hit-testing for frameless windows; sublayers paint
+  opaque only (no alpha compositing, needs a real compositor); no packaging/distribution
+  mechanism yet (`docker/linux/` is dev/test only).
+
 ## Phase 8 — macOS packaging (verified working 2026-08-17)
 
 - **Package:** `bun run pack:mac -a <app-dir> -n Name -i com.example.id [-o out] [--no-dmg]`

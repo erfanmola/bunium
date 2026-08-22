@@ -29,6 +29,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const isWin = process.platform === "win32";
+const isLinux = process.platform === "linux";
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
 interface NativePaths {
@@ -37,6 +38,12 @@ interface NativePaths {
   frameworkDir: string;
   resourcesDir: string;
 }
+
+// Linux CEF distro dir name follows native/linux/build.sh's own
+// BUNIUM_LINUX_ARCH convention (cef-linuxarm64 / cef-linux64) -- mirrored
+// here so the dev-tree path matches whatever the build script produced.
+const linuxCefDir =
+  process.arch === "arm64" ? "cef-linuxarm64" : "cef-linux64";
 
 const DEV_PATHS: NativePaths = isWin
   ? {
@@ -48,12 +55,26 @@ const DEV_PATHS: NativePaths = isWin
       frameworkDir: `${repoRoot}vendor/cef-windows-x64/Release`,
       resourcesDir: `${repoRoot}vendor/cef-windows-x64/Resources`,
     }
-  : {
-      shim: `${repoRoot}native/build/bunium_shim.dylib`,
-      subprocess: `${repoRoot}native/build/bunium_subprocess`,
-      frameworkDir: `${repoRoot}vendor/cef-macosarm64/Release/Chromium Embedded Framework.framework`,
-      resourcesDir: `${repoRoot}vendor/cef-macosarm64/Release/Chromium Embedded Framework.framework/Resources`,
-    };
+  : isLinux
+    ? {
+        shim: `${repoRoot}native/build/bunium_shim.so`,
+        subprocess: `${repoRoot}native/build/bunium_subprocess`,
+        // Same flat Release/Resources split as Windows -- no framework
+        // bundle on Linux either. native/linux/build.sh copies libcef.so +
+        // icudtl.dat + v8_context_snapshot.bin next to the built artifacts
+        // (native/build/) so an $ORIGIN-relative rpath resolves them
+        // without needing this dir at runtime for the .so itself, but
+        // resources_dir_path still needs the real Resources/ tree (locales
+        // etc).
+        frameworkDir: `${repoRoot}vendor/${linuxCefDir}/Release`,
+        resourcesDir: `${repoRoot}vendor/${linuxCefDir}/Resources`,
+      }
+    : {
+        shim: `${repoRoot}native/build/bunium_shim.dylib`,
+        subprocess: `${repoRoot}native/build/bunium_subprocess`,
+        frameworkDir: `${repoRoot}vendor/cef-macosarm64/Release/Chromium Embedded Framework.framework`,
+        resourcesDir: `${repoRoot}vendor/cef-macosarm64/Release/Chromium Embedded Framework.framework/Resources`,
+      };
 
 function devTreePresent(): boolean {
   return (
@@ -96,6 +117,14 @@ function platformPackagePaths(): NativePaths | null {
     return {
       shim: `${base}/shim/bunium_shim.dll`,
       subprocess: `${base}/shim/bunium_subprocess.exe`,
+      frameworkDir: `${base}/framework`,
+      resourcesDir: `${base}/framework`,
+    };
+  }
+  if (isLinux) {
+    return {
+      shim: `${base}/shim/bunium_shim.so`,
+      subprocess: `${base}/shim/bunium_subprocess`,
       frameworkDir: `${base}/framework`,
       resourcesDir: `${base}/framework`,
     };

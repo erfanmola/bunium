@@ -869,8 +869,87 @@ real apps get a per-app `root_cache_path` at packaging (Phase 8) anyway.
 
 ## Phase 6 — Linux port
 
-X11/Wayland windowing + CEF Linux distro. Repeat Phase 0-1 validation steps for this platform
-(don't assume macOS findings transfer).
+**Status: full examples/ sweep green (2026-08-22), X11 windowing only (v1 scope, no
+Wayland).** Repeated Phase 0-1 validation for this platform rather than assuming macOS/Windows
+findings transfer -- two real, Linux-specific bugs found and fixed along the way (below).
+
+`docker/linux/` is the dev/build/test environment (arm64 Ubuntu 24.04 container -- matches
+Docker Desktop's native platform on Apple Silicon, avoiding QEMU emulation for the CEF build):
+`Dockerfile` (toolchain + X11/Chromium runtime deps + Xvfb), `fetch-cef.sh` (downloads/verifies
+the pinned CEF linuxarm64/linux64 distro in 10MB chunks -- this network path caps a single
+response at 10MB -- and builds `libcef_dll_wrapper` via cmake/ninja), `run-examples.sh` (runs
+every `examples/*.ts` sequentially under Xvfb, one at a time -- same ProcessSingleton rule as
+mac/win -- prints a PASS/FAIL summary).
+
+`native/linux/build.sh` builds `bunium_shim.so` + `bunium_subprocess` from
+`native/mac/bunium_shim.cpp`/`subprocess_main.cpp`/`bunium_bsdiff_wrap.mm` unchanged (already
+proven platform-agnostic by the Windows port) plus Linux-only `bunium_window_linux.cc` (real
+Xlib top-level window + sublayers, XPutImage software blit, X11 Shape extension for sublayer
+clipping, no DPI scaling yet) and `bunium_system_linux_stub.cc` (honest no-op system-surface
+stubs -- Phase 5 tray/menu/notify/dialogs not ported yet, same "repeat Phase 0-1 first" scoping
+mac/win used). Built with `g++`/`gcc`, not clang -- see the compiler-vendor ABI mismatch note
+below.
+
+**Two real bugs found and fixed during bring-up:**
+- **Cross-compiler C++ ABI mismatch (build-time).** Building `bunium_shim.cpp` with clang++
+  against `libcef_dll_wrapper.a` (built by CEF's own cmake, which resolves to `/usr/bin/c++` ->
+  g++ on the Ubuntu image) segfaulted immediately inside `CefInitialize` -- confirmed via gdb:
+  a by-value `scoped_refptr<CefApp>` parameter's hidden-reference pointer arrived null/garbage.
+  Fixed by building with g++ throughout (matches the wrapper's own toolchain) -- the same class
+  of bug as the Windows port's bootstrap-flag mismatch (`native/win/build.sh`), different root
+  cause (compiler vendor vs. a CEF build define).
+- **Chrome-runtime pak/locale files resolve DIR_MODULE-relative, not via
+  `CefSettings.resources_dir_path` (startup crash).** Every window-creating example hard-crashed
+  on launch with a release `CHECK` (SIGTRAP, no stderr message) inside
+  `ChromeMainDelegate::PostEarlyInitialization -> LoadLocalState`. Root-caused via gdb backtrace
+  + strace: `chrome_100_percent.pak`/`chrome_200_percent.pak`/`resources.pak`/locale paks were
+  being looked up relative to **libcef.so's own directory** (`native/build/`, where the shim
+  copies it) via `base::PathService::Get(base::DIR_MODULE)`/dladdr -- `resources_dir_path` only
+  governs CEF's own resource-bundle delegate, not Chrome-runtime's separate resource-bundle
+  init. Fixed in `native/linux/build.sh`: copy `*.pak` + `locales/` from
+  `vendor/cef-<platform>/Resources/` next to the built shim, same pattern
+  `native/win/build.sh` already used (and had already solved this exact issue for Windows,
+  just not yet recognized as the same root cause when Linux hit it independently). Also needed,
+  matching the win build script: `icudtl.dat` + `v8_context_snapshot.bin` copied next to the
+  shim for the same DIR_MODULE-relative reason (ICU/V8 init).
+- **`src/paths.ts` had no Linux branch at all** (only `isWin` vs. a macOS-only else) --
+  every dlopen attempted to load `bunium_shim.dylib` on Linux, failing with `ERR_DLOPEN_FAILED:
+  invalid ELF header`. Added `isLinux` + a `native/build/bunium_shim.so` dev-tree branch
+  (subprocess binary name unchanged, matching mac/win) and a Linux platform-package branch
+  (`bunium-linux-<arch>/shim/bunium_shim.so`) for Phase 11 parity. `frameworkDir`/`resourcesDir`
+  mirror Windows' flat Release/Resources split (no framework bundle on Linux either) --
+  `vendor/cef-linuxarm64/Release` + `.../Resources`, arch-derived dir name matching
+  `native/linux/build.sh`'s own `cef-linuxarm64`/`cef-linux64` convention.
+
+**Full `examples/` sweep (2026-08-22, linuxarm64 container, bun 1.4.0): 35/37 PASS.** Every
+window/IPC/webview/system-stub/update example passes, including `webview-{clip,clip-hit,
+element,hit,stacking}`, typed IPC both directions, `bsdiff`/`update-journal`/`update-e2e`/
+`relaunch`. Two non-bugs, both environment-limited (same category as Windows' own exclusions):
+- `color-scheme-live-test.ts` is inherently mac-only (shells out to `defaults`/`osascript`) --
+  stays off the Linux run matrix, same as it already does for Windows.
+- `vite-dev-test.ts` failed once on a stone-cold container (`bunx vite`'s first-ever invocation
+  needs to resolve/download ~110 packages, blowing the test's 10s dev-server-ready timeout) --
+  passed cleanly on a rerun with a warm `bunx` cache. Not a bunium bug; a real Linux dev machine
+  running this after its own `bun install` already has the cache warm.
+- Also fixed as a drive-by: `bunium_common.h`'s `OnBeforeContextMenu` mac-only fix (suppressing
+  CEF's unsupported-in-OSR default context menu, which crashed on right-click) is mac-specific
+  code and doesn't affect Linux -- Linux has no context-menu handler wired at all yet (tracked
+  as a v2 follow-up alongside the missing tray/menu/notify/dialogs implementations).
+
+**Known v1 scope gaps (deliberate, matches the "repeat Phase 0-1, not full parity" plan note):**
+- X11 only, no Wayland.
+- No DPI/HiDPI scaling (`bunium_window_get_scale` always returns 1.0).
+- No native context-menu suppression (mac's `OnBeforeContextMenu` crash fix not ported --
+  right-click crash risk on Linux is unconfirmed/unverified, same failure mode as the mac bug
+  this session fixed, worth checking before considering Linux crash-hardened).
+- Phase 5 system surface (tray/menu/notifications/dialogs) is stub-only (honest no-ops, not
+  missing symbols -- `native/linux/bunium_system_linux_stub.cc`).
+- No synthetic resize-edge/draggable-region hit-testing for frameless windows (mac's
+  `BuniumContentView` resize-bar code not ported).
+- Sublayers paint opaque only, no alpha compositing (needs a running compositor + 32-bit ARGB
+  visual, unlike a plain Xvfb/no-WM dev environment).
+- Packaging (Phase 8 equivalent) not started for Linux -- `docker/linux/` is a dev/test
+  environment only, not a distribution mechanism.
 
 ## Phase 7 — Windows port
 
