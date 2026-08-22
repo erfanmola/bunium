@@ -115,8 +115,8 @@ cross-platform packaging/signing/updates, native OS color-scheme sync, a typed I
   ProcessSingleton one-at-a-time rule as every other platform) with a PASS/FAIL summary. Build:
   `docker build -t bunium-linux-dev -f docker/linux/Dockerfile .` then
   `docker run --rm -v "$(pwd)":/work -w /work bunium-linux-dev bash docker/linux/fetch-cef.sh`
-  then `... bash native/linux/build.sh` then `... -e LD_LIBRARY_PATH=/work/native/build ...
-  bash docker/linux/run-examples.sh`.
+  then `... bash native/linux/build.sh` then `... -e LD_LIBRARY_PATH=/work/native/build-linux
+  ... bash docker/linux/run-examples.sh`.
 - **`native/linux/build.sh` builds with g++, not clang++.** CEF's own cmake-built
   `libcef_dll_wrapper.a` on this Ubuntu image resolves to g++; linking a clang++-compiled
   `bunium_shim.cpp` against it segfaulted immediately inside `CefInitialize` (confirmed via gdb:
@@ -144,10 +144,18 @@ cross-platform packaging/signing/updates, native OS color-scheme sync, a typed I
   should check this first** -- it won't show up in stderr, only via gdb backtrace or strace.
 - **`src/paths.ts` needs an explicit Linux branch -- it silently fell through to the macOS
   `.dylib` path otherwise** (`ERR_DLOPEN_FAILED: invalid ELF header`). Fixed:
-  `native/build/bunium_shim.so` dev-tree path, Windows-style flat Release/Resources CEF layout
-  (no framework bundle on Linux either), arch-derived `vendor/cef-linuxarm64`/`cef-linux64` dir
-  matching `native/linux/build.sh`'s own convention, plus a `bunium-linux-<arch>` platform-
-  package branch for Phase 11 parity.
+  `native/build-linux/bunium_shim.so` dev-tree path, Windows-style flat Release/Resources CEF
+  layout (no framework bundle on Linux either), arch-derived `vendor/cef-linuxarm64`/
+  `cef-linux64` dir matching `native/linux/build.sh`'s own convention, plus a
+  `bunium-linux-<arch>` platform-package branch for Phase 11 parity.
+- **`native/linux/build.sh` outputs to `native/build-linux/`, NOT `native/build/` -- do not
+  "simplify" this to match mac/win.** A real incident this session: the Docker build originally
+  wrote into the shared `native/build/` (bind-mounted from this macOS host), and
+  `bunium_subprocess` has no platform-suffixed filename -- the Linux ELF binary silently
+  clobbered the host's mac one, breaking `bun run examples/*.ts` on mac with `cannot execute
+  binary file` + a GPU-process-crash loop until `bun run build:native:mac` was rerun. Keep
+  Linux's output dir separate; any future platform port sharing this bind-mounted checkout
+  needs the same treatment.
 - **35/37 examples PASS** (2026-08-22, linuxarm64, bun 1.4.0) -- every window/IPC/webview/
   system-stub/update example green. Two non-bugs: `color-scheme-live-test.ts` is inherently
   mac-only (`defaults`/`osascript`), stays off the run matrix same as it already does for

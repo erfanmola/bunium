@@ -903,8 +903,8 @@ below.
   on launch with a release `CHECK` (SIGTRAP, no stderr message) inside
   `ChromeMainDelegate::PostEarlyInitialization -> LoadLocalState`. Root-caused via gdb backtrace
   + strace: `chrome_100_percent.pak`/`chrome_200_percent.pak`/`resources.pak`/locale paks were
-  being looked up relative to **libcef.so's own directory** (`native/build/`, where the shim
-  copies it) via `base::PathService::Get(base::DIR_MODULE)`/dladdr -- `resources_dir_path` only
+  being looked up relative to **libcef.so's own directory** (`native/build-linux/`, where the
+  shim copies it) via `base::PathService::Get(base::DIR_MODULE)`/dladdr -- `resources_dir_path` only
   governs CEF's own resource-bundle delegate, not Chrome-runtime's separate resource-bundle
   init. Fixed in `native/linux/build.sh`: copy `*.pak` + `locales/` from
   `vendor/cef-<platform>/Resources/` next to the built shim, same pattern
@@ -914,12 +914,26 @@ below.
   shim for the same DIR_MODULE-relative reason (ICU/V8 init).
 - **`src/paths.ts` had no Linux branch at all** (only `isWin` vs. a macOS-only else) --
   every dlopen attempted to load `bunium_shim.dylib` on Linux, failing with `ERR_DLOPEN_FAILED:
-  invalid ELF header`. Added `isLinux` + a `native/build/bunium_shim.so` dev-tree branch
-  (subprocess binary name unchanged, matching mac/win) and a Linux platform-package branch
+  invalid ELF header`. Added `isLinux` + a `native/build-linux/bunium_shim.so` dev-tree branch
+  (own output dir, not `native/build/` -- see the build-output-collision bug below) and a Linux
+  platform-package branch
   (`bunium-linux-<arch>/shim/bunium_shim.so`) for Phase 11 parity. `frameworkDir`/`resourcesDir`
   mirror Windows' flat Release/Resources split (no framework bundle on Linux either) --
   `vendor/cef-linuxarm64/Release` + `.../Resources`, arch-derived dir name matching
   `native/linux/build.sh`'s own `cef-linuxarm64`/`cef-linux64` convention.
+- **Build-output collision with the mac host -- a real incident, not hypothetical.**
+  `native/linux/build.sh` originally wrote into `native/build/`, the same directory the mac
+  build uses -- and `bunium_subprocess` has no platform-suffixed filename (unlike
+  `bunium_shim.{dylib,so,dll}`), so running the Docker Linux build against this repo's
+  bind-mounted checkout silently overwrote the host's mac subprocess binary with the Linux ELF
+  one. Symptom on the mac host: `bun run examples/*.ts` started failing with
+  `cannot execute binary file` + a GPU-process-exited/network-service-crashed loop, not an
+  obvious "wrong binary" error. Fixed by moving Linux output to its own `native/build-linux/`
+  dir (`.gitignore`d alongside `native/build/`) -- structurally prevents the collision instead
+  of relying on remembering to rerun `bun run build:native:mac` afterward. **Anyone doing Linux
+  Docker-based dev against a repo checkout also used for mac/win dev should know this class of
+  bug exists** -- any future platform port sharing a bind-mounted checkout should give its
+  build output its own directory from the start.
 
 **Full `examples/` sweep (2026-08-22, linuxarm64 container, bun 1.4.0): 35/37 PASS.** Every
 window/IPC/webview/system-stub/update example passes, including `webview-{clip,clip-hit,
