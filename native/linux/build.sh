@@ -97,6 +97,7 @@ GTK_LIBS=($(pkg-config --libs gtk+-3.0))
   "$SCRIPT_DIR/bunium_system_events_linux.cc" \
   "$SCRIPT_DIR/bunium_system_notify_linux.cc" \
   "$SCRIPT_DIR/bunium_system_dialogs_linux.cc" \
+  "$SCRIPT_DIR/bunium_system_tray_linux.cc" \
   "$SCRIPT_DIR/bunium_system_linux_stub.cc" \
   "$OUT_DIR/bunium_bsdiff_wrap.o" \
   "$OUT_DIR/bsdiff.o" "$OUT_DIR/bspatch.o" \
