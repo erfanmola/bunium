@@ -56,12 +56,19 @@ const DEV_PATHS: NativePaths = isWin
     }
   : isLinux
     ? {
-        shim: `${repoRoot}native/build/bunium_shim.so`,
-        subprocess: `${repoRoot}native/build/bunium_subprocess`,
+        // native/build-linux/, not native/build/ -- deliberately separate
+        // from the mac/win output dir. bunium_subprocess has no platform
+        // suffix (unlike bunium_shim.{dylib,so,dll}), so a shared dir would
+        // let a Docker-built Linux binary silently clobber a host mac/win
+        // one when the repo is bind-mounted for Linux dev -- see the
+        // matching comment in native/linux/build.sh (a real incident, not
+        // hypothetical).
+        shim: `${repoRoot}native/build-linux/bunium_shim.so`,
+        subprocess: `${repoRoot}native/build-linux/bunium_subprocess`,
         // Same flat Release/Resources split as Windows -- no framework
         // bundle on Linux either. native/linux/build.sh copies libcef.so +
         // icudtl.dat + v8_context_snapshot.bin next to the built artifacts
-        // (native/build/) so an $ORIGIN-relative rpath resolves them
+        // (native/build-linux/) so an $ORIGIN-relative rpath resolves them
         // without needing this dir at runtime for the .so itself, but
         // resources_dir_path still needs the real Resources/ tree (locales
         // etc).

@@ -5,6 +5,7 @@ vendor/*
 !vendor/bsdiff/
 !vendor/bsdiff/**
 native/build/
+native/build-linux/
 poc/
 dist-app/
 dist-release/

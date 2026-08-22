@@ -29,7 +29,18 @@ esac
 CEF_ROOT="$REPO_ROOT/vendor/cef-${CEF_PLATFORM}"
 CEF_RELEASE="$CEF_ROOT/Release"
 WRAPPER="$CEF_ROOT/build/libcef_dll_wrapper/libcef_dll_wrapper.a"
-OUT_DIR="$REPO_ROOT/native/build"
+# Deliberately NOT native/build/ -- this script is meant to run inside the
+# bunium-linux-dev container with the repo bind-mounted from a macOS (or
+# other-platform) host, and native/build/bunium_subprocess has the exact
+# same filename as the mac/win build's own subprocess binary (no platform
+# suffix, unlike bunium_shim.{dylib,so,dll}). A real incident: running this
+# script clobbered the host's mac bunium_subprocess with the Linux ELF
+# binary, breaking `bun run examples/*.ts` on the mac host with silent
+# "cannot execute binary file" + GPU-process-crash-loop symptoms until
+# `bun run build:native:mac` was rerun to restore it. A separate output dir
+# makes that class of collision structurally impossible instead of relying
+# on remembering to rebuild mac afterward.
+OUT_DIR="$REPO_ROOT/native/build-linux"
 BSDIFF_DIR="$REPO_ROOT/vendor/bsdiff"
 MAC_SRC="$SCRIPT_DIR/../mac"
 
