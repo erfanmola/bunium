@@ -931,17 +931,17 @@ element,hit,stacking}`, typed IPC both directions, `bsdiff`/`update-journal`/`up
   needs to resolve/download ~110 packages, blowing the test's 10s dev-server-ready timeout) --
   passed cleanly on a rerun with a warm `bunx` cache. Not a bunium bug; a real Linux dev machine
   running this after its own `bun install` already has the cache warm.
-- Also fixed as a drive-by: `bunium_common.h`'s `OnBeforeContextMenu` mac-only fix (suppressing
-  CEF's unsupported-in-OSR default context menu, which crashed on right-click) is mac-specific
-  code and doesn't affect Linux -- Linux has no context-menu handler wired at all yet (tracked
-  as a v2 follow-up alongside the missing tray/menu/notify/dialogs implementations).
+- This session's separate `OnBeforeContextMenu` fix (suppressing CEF's unsupported-in-OSR
+  default context menu, which crashed the whole process on right-click) lives in the shared
+  `bunium_common.h` with no platform guard, so it already applies to Linux for free -- no
+  Linux-specific work needed, confirmed by inspection (not yet exercised by a real right-click,
+  same untestable-without-a-desktop category as mac's own verification of it).
 
 **Known v1 scope gaps (deliberate, matches the "repeat Phase 0-1, not full parity" plan note):**
 - X11 only, no Wayland.
 - No DPI/HiDPI scaling (`bunium_window_get_scale` always returns 1.0).
-- No native context-menu suppression (mac's `OnBeforeContextMenu` crash fix not ported --
-  right-click crash risk on Linux is unconfirmed/unverified, same failure mode as the mac bug
-  this session fixed, worth checking before considering Linux crash-hardened).
+- Native context-menu suppression (`OnBeforeContextMenu`) already applies via shared
+  `bunium_common.h` (see above) -- not a gap, just unverified by an actual right-click yet.
 - Phase 5 system surface (tray/menu/notifications/dialogs) is stub-only (honest no-ops, not
   missing symbols -- `native/linux/bunium_system_linux_stub.cc`).
 - No synthetic resize-edge/draggable-region hit-testing for frameless windows (mac's

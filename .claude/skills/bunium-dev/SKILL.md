@@ -155,12 +155,12 @@ cross-platform packaging/signing/updates, native OS color-scheme sync, a typed I
   invocation resolves ~110 packages, blowing the test's 10s ready-timeout) but passed cleanly
   once `bunx`'s cache was warm -- not a bunium bug.
 - **v1 scope gaps, deliberate** (matches "repeat Phase 0-1, not full parity" plan note): X11
-  only (no Wayland); no DPI/HiDPI scaling; no native context-menu suppression (mac's
-  `OnBeforeContextMenu` right-click-crash fix from this same session not ported -- unconfirmed
-  whether Linux has the same crash, worth checking); Phase 5 system surface is stub-only;
-  no synthetic resize-edge/draggable-region hit-testing for frameless windows; sublayers paint
-  opaque only (no alpha compositing, needs a real compositor); no packaging/distribution
-  mechanism yet (`docker/linux/` is dev/test only).
+  only (no Wayland); no DPI/HiDPI scaling; Phase 5 system surface is stub-only; no synthetic
+  resize-edge/draggable-region hit-testing for frameless windows; sublayers paint opaque only
+  (no alpha compositing, needs a real compositor); no packaging/distribution mechanism yet
+  (`docker/linux/` is dev/test only). **Not a gap:** the mac `OnBeforeContextMenu` right-click-
+  crash fix lives in shared `bunium_common.h` with no platform guard, so it already applies to
+  Linux for free.
 
 ## Phase 8 — macOS packaging (verified working 2026-08-17)
 
