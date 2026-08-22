@@ -79,22 +79,29 @@ CCFLAGS=(-std=c11 -fvisibility=hidden -fPIC)
 "$CXX" "${CXXFLAGS[@]}" -x c++ -I"$CEF_ROOT" -I"$BSDIFF_DIR" \
   -c -o "$OUT_DIR/bunium_bsdiff_wrap.o" "$MAC_SRC/bunium_bsdiff_wrap.mm"
 
-# libdbus-1 (org.freedesktop.Notifications, Phase 5 notifications) via
-# pkg-config -- the dev image's dbus-1.pc lives at the usual multiarch path.
+# libdbus-1 (org.freedesktop.Notifications, Phase 5 notifications) and
+# gtk+-3.0 (Phase 5 dialogs) via pkg-config.
 DBUS_CFLAGS=($(pkg-config --cflags dbus-1))
 DBUS_LIBS=($(pkg-config --libs dbus-1))
+GTK_CFLAGS=($(pkg-config --cflags gtk+-3.0))
+GTK_LIBS=($(pkg-config --libs gtk+-3.0))
 
-"$CXX" "${CXXFLAGS[@]}" "${DBUS_CFLAGS[@]}" \
+# bunium_system_dialogs_linux.cc needs RTTI-free-but-exceptions-off GTK
+# lambdas-as-callbacks (+[](...){...} decays a captureless lambda to a raw
+# function pointer, no RTTI/exceptions needed) -- compiles clean under the
+# same CXXFLAGS as everything else, no per-file flag override required.
+"$CXX" "${CXXFLAGS[@]}" "${DBUS_CFLAGS[@]}" "${GTK_CFLAGS[@]}" \
   -I"$CEF_ROOT" -I"$BSDIFF_DIR" \
   -shared -fPIC -o "$OUT_DIR/bunium_shim.so" \
   "$MAC_SRC/bunium_shim.cpp" "$SCRIPT_DIR/bunium_window_linux.cc" \
   "$SCRIPT_DIR/bunium_system_events_linux.cc" \
   "$SCRIPT_DIR/bunium_system_notify_linux.cc" \
+  "$SCRIPT_DIR/bunium_system_dialogs_linux.cc" \
   "$SCRIPT_DIR/bunium_system_linux_stub.cc" \
   "$OUT_DIR/bunium_bsdiff_wrap.o" \
   "$OUT_DIR/bsdiff.o" "$OUT_DIR/bspatch.o" \
   "$WRAPPER" -L"$CEF_RELEASE" -lcef -lX11 -lXext -lpthread \
-  "${DBUS_LIBS[@]}" \
+  "${DBUS_LIBS[@]}" "${GTK_LIBS[@]}" \
   -Wl,-rpath,'$ORIGIN'
 
 "$CXX" "${CXXFLAGS[@]}" \
