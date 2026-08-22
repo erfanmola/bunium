@@ -42,8 +42,7 @@ interface NativePaths {
 // Linux CEF distro dir name follows native/linux/build.sh's own
 // BUNIUM_LINUX_ARCH convention (cef-linuxarm64 / cef-linux64) -- mirrored
 // here so the dev-tree path matches whatever the build script produced.
-const linuxCefDir =
-  process.arch === "arm64" ? "cef-linuxarm64" : "cef-linux64";
+const linuxCefDir = process.arch === "arm64" ? "cef-linuxarm64" : "cef-linux64";
 
 const DEV_PATHS: NativePaths = isWin
   ? {
