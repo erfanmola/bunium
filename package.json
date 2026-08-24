@@ -19,8 +19,10 @@
   },
   "scripts": {
     "build:native:mac": "native/mac/build.sh",
+    "build:native:linux": "native/linux/build.sh",
     "pack:mac": "packaging/mac/package.sh",
     "pack:win": "packaging/win/package.sh",
+    "pack:linux": "packaging/linux/package.sh",
     "release:artifacts": "scripts/stage-release-artifacts.sh",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",

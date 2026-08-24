@@ -12,9 +12,16 @@
 //     ARGB visual/transparency. Software rasterization only (matches the
 //     project's own measured GPU-composited-OSR-is-slower finding, see
 //     ARCHITECTURE.md Sec6).
-//   - No DPI scaling yet (bunium_window_get_scale always returns 1.0) --
-//     Xft.dpi/randr-based scale detection is real work, deferred until a
-//     HiDPI Linux target is actually being validated against.
+//   - DPI scaling: `Xft.dpi` (the X resource desktop environments write to
+//     communicate the user's configured DPI -- same source GTK/Qt/Xft-aware
+//     toolkits read) drives scale = dpi/96, with an explicit `GDK_SCALE`
+//     integer env override taking priority when set (matches GTK's own
+//     override convention). No per-monitor detection (X11/Xinerama has no
+//     single-window "which monitor is this on" primitive the way Win32's
+//     per-monitor-DPI-v2 or macOS's NSScreen does) -- one scale for the
+//     whole X11 display, applied at window-creation time and left fixed for
+//     that window's lifetime (matches this port's overall no-live-monitor-
+//     hotplug-tracking scope).
 //   - Sublayers (<bunium-webview> backing) are real override-redirect
 //     windows that track their parent's position, mirroring the Windows
 //     WS_POPUP approach. Clipping (DOM overflow:hidden ancestor clipping)
@@ -25,13 +32,21 @@
 //     region changes. Sublayers still paint opaque, not alpha-composited
 //     (needs a running compositor + 32-bit ARGB visual, unlike a plain
 //     Xvfb/no-WM dev environment) -- tracked as a Phase 2-parity follow-up.
-//   - No synthetic resize-edge/draggable-region hit-testing for frameless
-//     windows yet (mirrors mac's BuniumContentView resize-bar code, not
-//     ported) -- frame_enabled=false windows have no window-manager
-//     decorations to fight for the resize border but the app draws its own
-//     UI to indicate this rather than the OS.
+//   - Resize-edge + draggable-region hit-testing for frameless windows uses
+//     the EWMH `_NET_WM_MOVERESIZE` client-message convention (the same
+//     mechanism GTK/Qt's own client-side-decoration windows use to hand a
+//     border-drag or titlebar-drag off to the window manager) rather than
+//     manually tracking the drag ourselves via XMoveResizeWindow -- almost
+//     every WM (mutter, kwin, xfwm, i3, etc.) implements this, and letting
+//     the WM own the drag loop gets snapping/multi-monitor/edge-resistance
+//     behavior for free, matching what mac's performWindowDragWithEvent:
+//     already delegates to AppKit. See ResizeDirectionAtPoint/
+//     SendNetWmMoveResize below; hit-tested and dispatched from ButtonPress
+//     in bunium_window_pump_events, mirroring win32's WM_NCHITTEST gate
+//     (only frame_enabled=false, non-sublayer, resizable-aware).
 //   - Frames stay top-left-origin BGRA, matching CEF's OSR output directly.
 #include <X11/Xlib.h>
+#include <X11/Xresource.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/shape.h>
 
@@ -39,6 +54,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -78,6 +94,81 @@ Display* GetDisplay() {
   return g_display;
 }
 
+// Detects the display's DPI scale. See file header for the Xft.dpi/
+// GDK_SCALE precedence rationale. 96 DPI is the X11 baseline (scale 1.0),
+// matching the win32 96-DPI baseline exactly, so the same downstream
+// physical/logical conversion math the Windows port already established
+// (LogRectToPhysical/PhysToLogical there) applies unchanged here.
+double DetectX11Scale(Display* d) {
+  if (const char* gdk_scale = getenv("GDK_SCALE")) {
+    int s = atoi(gdk_scale);
+    if (s >= 1 && s <= 4) return static_cast<double>(s);
+  }
+  double scale = 1.0;
+  char* rms = XResourceManagerString(d);
+  if (rms) {
+    XrmDatabase db = XrmGetStringDatabase(rms);
+    if (db) {
+      char* type = nullptr;
+      XrmValue value;
+      if (XrmGetResource(db, "Xft.dpi", "Xft.Dpi", &type, &value) &&
+          value.addr) {
+        double dpi = atof(value.addr);
+        if (dpi > 0) scale = dpi / 96.0;
+      }
+      XrmDestroyDatabase(db);
+    }
+  }
+  // Clamp to a sane range -- a malformed/missing resource (no session bus,
+  // headless Xvfb, etc.) should degrade to scale 1.0, not a degenerate
+  // window.
+  if (scale < 0.5 || scale > 4.0) scale = 1.0;
+  return scale;
+}
+
+int RoundScale(double v) { return static_cast<int>(v + 0.5); }
+
+// Finds a 32-bit TrueColor visual with an 8-bit alpha channel (depth=32,
+// the standard "ARGB visual" every compositor-aware toolkit -- GTK's
+// gdk_screen_get_rgba_visual, Qt's QX11Info, etc. -- looks up the same way)
+// on the given screen, if one exists. A running compositing manager
+// (picom, mutter, kwin's own compositor, etc.) is what actually turns
+// per-pixel alpha in such a visual into real screen blending; without one,
+// creating a window with this visual still works (X11 doesn't require a
+// compositor to create ARGB windows) but the alpha channel has no visible
+// effect -- the WM/X server just shows garbage or ignores it, which is
+// exactly the documented v1 gap ("needs a running compositor").
+Visual* FindArgbVisual(Display* d, int screen, int* depth_out) {
+  XVisualInfo template_info;
+  template_info.screen = screen;
+  template_info.depth = 32;
+  template_info.c_class = TrueColor;
+  int count = 0;
+  XVisualInfo* infos =
+      XGetVisualInfo(d, VisualScreenMask | VisualDepthMask | VisualClassMask,
+                      &template_info, &count);
+  if (!infos || count == 0) {
+    if (infos) XFree(infos);
+    return nullptr;
+  }
+  // Prefer one with a non-zero alpha mask (some 32-depth TrueColor visuals
+  // are padding-only, alpha_mask==0 -- not what we want).
+  Visual* result = nullptr;
+  for (int i = 0; i < count; i++) {
+    unsigned long rgb_mask = infos[i].red_mask | infos[i].green_mask |
+                              infos[i].blue_mask;
+    unsigned long alpha_mask = (~rgb_mask) & 0xFFFFFFFFUL;
+    if (alpha_mask != 0) {
+      result = infos[i].visual;
+      break;
+    }
+  }
+  if (!result) result = infos[0].visual;
+  if (depth_out) *depth_out = 32;
+  XFree(infos);
+  return result;
+}
+
 struct BuniumLinuxHandle {
   Window window = 0;
   GC gc = nullptr;
@@ -86,7 +177,17 @@ struct BuniumLinuxHandle {
   bool transparent = false;
   bool frame_enabled = true;
 
-  double scale = 1.0;  // no HiDPI detection yet, see file header
+  // 24 (opaque, DefaultVisual) unless transparent=true and a 32-bit ARGB
+  // TrueColor visual was found at creation time (see bunium_window_create),
+  // in which case this is 32 and `visual` points at that visual -- BlitFrame
+  // must build its XImage with these, not DefaultDepth/DefaultVisual,
+  // otherwise the alpha byte CEF wrote gets silently discarded by the X
+  // server (a 24-bit visual has no alpha channel at all, regardless of what
+  // bytes are in the client-side buffer).
+  int depth = 24;
+  Visual* visual = nullptr;  // null => caller should use DefaultVisual
+
+  double scale = 1.0;  // Xft.dpi/GDK_SCALE-derived, see DetectX11Scale above
   int logical_w = 0;
   int logical_h = 0;
   int min_w = 0;
@@ -100,6 +201,10 @@ struct BuniumLinuxHandle {
   int pix_w = 0;
   int pix_h = 0;
 
+  // Window-relative logical (CSS) px, matching bunium_sublayer_set_frame's
+  // cross-platform contract -- converted to physical px (via scale) only at
+  // the point of an actual X11 geometry call, mirroring the win
+  // implementation's LogRectToPhysical pattern.
   Window parent_window = 0;
   int abs_x = 0, abs_y = 0, abs_w = 0, abs_h = 0;
 
@@ -148,8 +253,16 @@ void RepositionSublayer(BuniumLinuxHandle* h) {
   Window child_ret;
   XTranslateCoordinates(d, h->parent_window, DefaultRootWindow(d), 0, 0,
                          &screen_x, &screen_y, &child_ret);
-  XMoveResizeWindow(d, h->window, screen_x + h->abs_x, screen_y + h->abs_y,
-                     std::max(1, h->abs_w), std::max(1, h->abs_h));
+  // abs_x/y/w/h are logical (CSS) px -- convert to physical px for the
+  // actual X11 geometry call (X11 windows are always sized in physical/
+  // device px, same as every other platform's native window).
+  const double s = h->scale;
+  int phys_x = static_cast<int>(h->abs_x * s);
+  int phys_y = static_cast<int>(h->abs_y * s);
+  int phys_w = static_cast<int>(h->abs_w * s);
+  int phys_h = static_cast<int>(h->abs_h * s);
+  XMoveResizeWindow(d, h->window, screen_x + phys_x, screen_y + phys_y,
+                     std::max(1, phys_w), std::max(1, phys_h));
   if (h->clipped) ApplyClipShape(h);
 }
 
@@ -158,8 +271,7 @@ void RepositionSublayer(BuniumLinuxHandle* h) {
 // abs_x/y/w/h); the shape itself must be expressed in the sublayer's own
 // client-relative coordinates, so this re-bases by abs_x/abs_y every call
 // -- mirrors the win implementation's LogRectToPhysical + SetWindowRgn
-// (rel = clip - abs_frame origin) exactly, just without the DPI scale
-// step (Linux has none yet, see file header).
+// (rel = clip - abs_frame origin) exactly, including the DPI scale step.
 void ApplyClipShape(BuniumLinuxHandle* h) {
   if (!h->is_sublayer || !h->clipped) return;
   Display* d = GetDisplay();
@@ -180,9 +292,13 @@ void ApplyClipShape(BuniumLinuxHandle* h) {
   }
   rel_w = std::max(0, rel_w);
   rel_h = std::max(0, rel_h);
-  XRectangle rect{static_cast<short>(rel_x), static_cast<short>(rel_y),
-                   static_cast<unsigned short>(rel_w),
-                   static_cast<unsigned short>(rel_h)};
+  // rel_x/y/w/h are logical px (same space as clip_x/y/w/h); the Shape
+  // region itself is expressed in the sublayer's own physical px, same
+  // conversion RepositionSublayer applies to abs_x/y/w/h.
+  const double s = h->scale;
+  XRectangle rect{static_cast<short>(rel_x * s), static_cast<short>(rel_y * s),
+                   static_cast<unsigned short>(rel_w * s),
+                   static_cast<unsigned short>(rel_h * s)};
   XShapeCombineRectangles(d, h->window, ShapeBounding, 0, 0, &rect, 1,
                            ShapeSet, 0);
 }
@@ -214,9 +330,17 @@ void BlitFrame(BuniumLinuxHandle* h) {
   }
 
   int screen = DefaultScreen(d);
-  XImage* image = XCreateImage(
-      d, DefaultVisual(d, screen), 24, ZPixmap, 0,
-      reinterpret_cast<char*>(pixels.data()), pw, ph, 32, 0);
+  // Use the window's own visual/depth, not DefaultVisual/24 -- a
+  // transparent=true window created with a 32-bit ARGB visual (see
+  // bunium_window_create) needs its XImage built at depth 32 too, or the
+  // X server reinterprets CEF's BGRA bytes as a 24-bit image (silently
+  // dropping the alpha byte) regardless of what visual the window itself
+  // was created with.
+  Visual* visual = h->visual ? h->visual : DefaultVisual(d, screen);
+  int depth = h->visual ? h->depth : 24;
+  XImage* image = XCreateImage(d, visual, depth, ZPixmap, 0,
+                                reinterpret_cast<char*>(pixels.data()), pw, ph,
+                                32, 0);
   if (!image) return;
   // Ownership of `pixels`' storage stays with the local vector -- detach
   // before XDestroyImage tries to free() it (XCreateImage over an existing
@@ -238,13 +362,91 @@ uint32_t ModifiersFromXState(unsigned int state) {
   return mods;
 }
 
+// EWMH _NET_WM_MOVERESIZE direction values (wm-spec.freedesktop.org) --
+// the 8 resize edges/corners plus a dedicated "move" value.
+enum {
+  kNetWmMoveResizeSizeTopLeft = 0,
+  kNetWmMoveResizeSizeTop = 1,
+  kNetWmMoveResizeSizeTopRight = 2,
+  kNetWmMoveResizeSizeRight = 3,
+  kNetWmMoveResizeSizeBottomRight = 4,
+  kNetWmMoveResizeSizeBottom = 5,
+  kNetWmMoveResizeSizeBottomLeft = 6,
+  kNetWmMoveResizeSizeLeft = 7,
+  kNetWmMoveResizeMove = 8,
+};
+
+// Border thickness for synthetic resize-edge hit-testing, in logical
+// (CSS) px -- same 6px value mac's kBuniumResizeBorder and win's kEdge use.
+constexpr int kResizeBorder = 6;
+
+// Asks the window manager to take over an interactive move or resize,
+// starting from the given root(screen)-relative point. Once sent, the WM
+// owns the drag loop entirely -- no further ButtonPress/MotionNotify/
+// ButtonRelease events arrive for this window until the drag ends, same
+// hand-off semantics as win32 returning a non-HTCLIENT code from
+// WM_NCHITTEST (the OS takes over from there too).
+void SendNetWmMoveResize(Display* d, Window w, int root_x, int root_y,
+                          int direction, int button) {
+  Atom atom = XInternAtom(d, "_NET_WM_MOVERESIZE", False);
+  XClientMessageEvent msg = {};
+  msg.type = ClientMessage;
+  msg.window = w;
+  msg.message_type = atom;
+  msg.format = 32;
+  msg.data.l[0] = root_x;
+  msg.data.l[1] = root_y;
+  msg.data.l[2] = direction;
+  msg.data.l[3] = button;
+  msg.data.l[4] = 1;  // source indication: 1 = normal application
+  // Per the EWMH spec, the client should release any of its own pointer
+  // grab before handing off -- we never take one explicitly, but this is
+  // cheap insurance against a WM that expects it unconditionally.
+  XUngrabPointer(d, CurrentTime);
+  XSendEvent(d, DefaultRootWindow(d), False,
+             SubstructureRedirectMask | SubstructureNotifyMask,
+             reinterpret_cast<XEvent*>(&msg));
+  XFlush(d);
+}
+
+// Mirrors mac's ResizeEdgeAtPoint / win's WM_NCHITTEST edge math: lx/ly are
+// window-relative logical px. Returns a kNetWmMoveResizeSize* direction, or
+// -1 if the point isn't within the resize border (or the window can't
+// resize at all -- unresizable, or min==max on either axis).
+int ResizeDirectionAtPoint(BuniumLinuxHandle* h, int lx, int ly) {
+  if (!h->resizable) return -1;
+  bool can_resize = (h->max_w == 0 || h->max_w > h->min_w) &&
+                     (h->max_h == 0 || h->max_h > h->min_h);
+  if (!can_resize) return -1;
+  const int w = h->logical_w;
+  const int hgt = h->logical_h;
+  bool left = lx <= kResizeBorder;
+  bool right = lx >= w - kResizeBorder;
+  bool top = ly <= kResizeBorder;
+  bool bottom = ly >= hgt - kResizeBorder;
+  if (top && left) return kNetWmMoveResizeSizeTopLeft;
+  if (top && right) return kNetWmMoveResizeSizeTopRight;
+  if (bottom && left) return kNetWmMoveResizeSizeBottomLeft;
+  if (bottom && right) return kNetWmMoveResizeSizeBottomRight;
+  if (top) return kNetWmMoveResizeSizeTop;
+  if (bottom) return kNetWmMoveResizeSizeBottom;
+  if (left) return kNetWmMoveResizeSizeLeft;
+  if (right) return kNetWmMoveResizeSizeRight;
+  return -1;
+}
+
 void ForwardMouse(BuniumLinuxHandle* h, int x, int y, int button,
                    bool is_move, bool mouse_up, bool leave,
                    int click_count) {
   void* target = h->is_sublayer
                      ? reinterpret_cast<void*>(h->parent_window)
                      : reinterpret_cast<void*>(h->window);
-  int abs_x = x, abs_y = y;
+  // X11 event coords are physical px (window-relative) -- convert to
+  // logical (CSS) px before forwarding, matching the win implementation's
+  // PhysToLogical step between WM_* messages and CEF's view-space coords.
+  const double s = h->scale;
+  int abs_x = s != 1.0 ? static_cast<int>(x / s) : x;
+  int abs_y = s != 1.0 ? static_cast<int>(y / s) : y;
   if (h->is_sublayer) {
     abs_x += h->abs_x;
     abs_y += h->abs_y;
@@ -273,20 +475,60 @@ BUNIUM_LINUX_EXPORT void* bunium_window_create(int width, int height,
   auto* h = NewHandle(/*sublayer=*/false);
   h->transparent = transparent != 0;
   h->frame_enabled = frame_enabled != 0;
+  h->scale = DetectX11Scale(d);
   h->logical_w = width;
   h->logical_h = height;
 
+  // width/height are logical (CSS) px -- X11 windows are always sized in
+  // physical px (same as win32's CreateWindowHwnd(width*scale, ...)), so
+  // convert here, once, at creation.
+  int phys_w = static_cast<int>(width * h->scale);
+  int phys_h = static_cast<int>(height * h->scale);
+
   int screen = DefaultScreen(d);
+  Visual* visual = DefaultVisual(d, screen);
+  int depth = DefaultDepth(d, screen);
+  unsigned long attr_mask = CWEventMask;
   XSetWindowAttributes attrs = {};
-  attrs.background_pixel = BlackPixel(d, screen);
   attrs.event_mask = ExposureMask | StructureNotifyMask | ButtonPressMask |
                       ButtonReleaseMask | PointerMotionMask | KeyPressMask |
                       KeyReleaseMask | LeaveWindowMask;
 
-  Window window = XCreateWindow(
-      d, RootWindow(d, screen), 0, 0, width, height, 0,
-      DefaultDepth(d, screen), InputOutput, DefaultVisual(d, screen),
-      CWBackPixel | CWEventMask, &attrs);
+  if (h->transparent) {
+    int argb_depth = 24;
+    Visual* argb_visual = FindArgbVisual(d, screen, &argb_depth);
+    if (argb_visual) {
+      visual = argb_visual;
+      depth = argb_depth;
+      // A non-default-depth window requires an explicit colormap for that
+      // visual (XCreateWindow fails with BadMatch otherwise) and border
+      // pixel 0 in place of BlackPixel (which is only valid for the
+      // default visual/depth). CWBackPixel is deliberately dropped for
+      // this path -- a solid background_pixel would paint every frame's
+      // "before CEF's first paint" gap opaque black instead of leaving it
+      // transparent, undermining the whole point of the ARGB visual.
+      attrs.colormap = XCreateColormap(d, RootWindow(d, screen), visual,
+                                         AllocNone);
+      attrs.border_pixel = 0;
+      attr_mask |= CWColormap | CWBorderPixel;
+    }
+    // No ARGB visual available (e.g. no compositor/no 32-bit visual
+    // advertised by the X server) -- fall through and create a normal
+    // opaque window rather than fail outright; matches this file's
+    // existing pattern of degrading gracefully (see DetectX11Scale's
+    // fallback-to-1.0 comment) instead of hard-failing on an
+    // environment-dependent capability.
+  }
+  if (!h->transparent || visual == DefaultVisual(d, screen)) {
+    attrs.background_pixel = BlackPixel(d, screen);
+    attr_mask |= CWBackPixel;
+  }
+  h->depth = depth;
+  h->visual = visual;
+
+  Window window =
+      XCreateWindow(d, RootWindow(d, screen), 0, 0, phys_w, phys_h, 0, depth,
+                     InputOutput, visual, attr_mask, &attrs);
   if (!window) {
     DeleteHandle(h);
     return nullptr;
@@ -296,21 +538,41 @@ BUNIUM_LINUX_EXPORT void* bunium_window_create(int width, int height,
 
   if (title && *title) XStoreName(d, window, title);
   if (!frame_enabled) {
-    // Ask the window manager to skip decorations. Not all WMs honor
-    // override_redirect gracefully for a resizable top-level window, but
-    // it's the standard Xlib-only (no Motif/EWMH hints dependency) way to
-    // request it.
-    XSetWindowAttributes ov = {};
-    ov.override_redirect = frame_enabled ? False : True;
-    XChangeWindowAttributes(d, window, CWOverrideRedirect, &ov);
+    // Ask the window manager to skip decorations via _MOTIF_WM_HINTS --
+    // the same mechanism GTK/Qt's own client-side-decoration windows use.
+    // This was previously done via override_redirect=True, which is wrong:
+    // override-redirect windows opt OUT of window-manager management
+    // entirely, so a real WM (confirmed with openbox) silently ignores
+    // this window's _NET_WM_MOVERESIZE ClientMessages (SendNetWmMoveResize
+    // below) -- the synthetic-XTest-only test (test-resize-moveresize.cc)
+    // could not catch this because it only checks that bunium SENDS the
+    // message, not that anything WM-side consumes it. Keeping the window
+    // WM-managed (override_redirect stays False, the XCreateWindow
+    // default) while hiding decorations via Motif hints lets the WM still
+    // own the resize/drag protocol as designed, matching this file's own
+    // header-comment intent above.
+    struct MotifWmHints {
+      unsigned long flags;
+      unsigned long functions;
+      unsigned long decorations;
+      long input_mode;
+      unsigned long status;
+    };
+    Atom motif_hints_atom = XInternAtom(d, "_MOTIF_WM_HINTS", False);
+    MotifWmHints hints = {};
+    hints.flags = 1L << 1;  // MWM_HINTS_DECORATIONS
+    hints.decorations = 0;  // no border/titlebar
+    XChangeProperty(d, window, motif_hints_atom, motif_hints_atom, 32,
+                     PropModeReplace, reinterpret_cast<unsigned char*>(&hints),
+                     5);
   }
 
   XSetWMProtocols(d, window, &g_wm_delete_window, 1);
 
   XSizeHints hints = {};
   hints.flags = PMinSize | PMaxSize;
-  hints.min_width = hints.max_width = width;
-  hints.min_height = hints.max_height = height;
+  hints.min_width = hints.max_width = phys_w;
+  hints.min_height = hints.max_height = phys_h;
   XSetWMNormalHints(d, window, &hints);
 
   XMapWindow(d, window);
@@ -331,18 +593,23 @@ BUNIUM_LINUX_EXPORT void bunium_window_set_constraints(void* handle,
   h->max_w = max_width;
   h->max_h = max_height;
 
+  // min/max_width/height are logical px (cross-platform contract) --
+  // convert to physical px for the WM size-hint call, same as
+  // bunium_window_create.
+  const double s = h->scale;
   Display* d = GetDisplay();
   XSizeHints hints = {};
   if (resizable) {
     hints.flags = PMinSize | PMaxSize;
-    hints.min_width = min_width > 0 ? min_width : 1;
-    hints.min_height = min_height > 0 ? min_height : 1;
-    hints.max_width = max_width > 0 ? max_width : 100000;
-    hints.max_height = max_height > 0 ? max_height : 100000;
+    hints.min_width = min_width > 0 ? static_cast<int>(min_width * s) : 1;
+    hints.min_height = min_height > 0 ? static_cast<int>(min_height * s) : 1;
+    hints.max_width = max_width > 0 ? static_cast<int>(max_width * s) : 100000;
+    hints.max_height =
+        max_height > 0 ? static_cast<int>(max_height * s) : 100000;
   } else {
     hints.flags = PMinSize | PMaxSize;
-    hints.min_width = hints.max_width = h->logical_w;
-    hints.min_height = hints.max_height = h->logical_h;
+    hints.min_width = hints.max_width = static_cast<int>(h->logical_w * s);
+    hints.min_height = hints.max_height = static_cast<int>(h->logical_h * s);
   }
   XSetWMNormalHints(d, h->window, &hints);
 }
@@ -362,8 +629,15 @@ BUNIUM_LINUX_EXPORT void bunium_window_pump_events() {
         break;
       case ConfigureNotify:
         if (!h->is_sublayer) {
-          h->logical_w = ev.xconfigure.width;
-          h->logical_h = ev.xconfigure.height;
+          // ConfigureNotify reports physical px -- convert back to logical
+          // (CSS) px, matching win32's WM_WINDOWPOSCHANGED handling.
+          const double s = h->scale;
+          h->logical_w = s != 1.0
+                             ? static_cast<int>(ev.xconfigure.width / s)
+                             : ev.xconfigure.width;
+          h->logical_h = s != 1.0
+                             ? static_cast<int>(ev.xconfigure.height / s)
+                             : ev.xconfigure.height;
           RepositionAllSublayers(h->window);
         }
         break;
@@ -374,6 +648,28 @@ BUNIUM_LINUX_EXPORT void bunium_window_pump_events() {
         break;
       case ButtonPress:
       case ButtonRelease: {
+        // Resize-edge / draggable-region hand-off, frameless windows only
+        // (WM-decorated windows already get both for free from the WM's
+        // own titlebar/border chrome) -- checked on left-button press only,
+        // same priority order as mac's mouseDown: (resize edge wins over a
+        // draggable region underneath it).
+        if (ev.type == ButtonPress && !h->is_sublayer && !h->frame_enabled &&
+            ev.xbutton.button == 1) {
+          const double s = h->scale;
+          int lx = s != 1.0 ? static_cast<int>(ev.xbutton.x / s) : ev.xbutton.x;
+          int ly = s != 1.0 ? static_cast<int>(ev.xbutton.y / s) : ev.xbutton.y;
+          int dir = ResizeDirectionAtPoint(h, lx, ly);
+          if (dir < 0 &&
+              bunium_is_window_point_draggable(
+                  reinterpret_cast<void*>(h->window), lx, ly)) {
+            dir = kNetWmMoveResizeMove;
+          }
+          if (dir >= 0) {
+            SendNetWmMoveResize(d, h->window, ev.xbutton.x_root,
+                                 ev.xbutton.y_root, dir, /*button=*/1);
+            break;
+          }
+        }
         int button = ev.xbutton.button == 2 ? 1
                      : ev.xbutton.button == 3 ? 2
                                                : 0;
@@ -494,6 +790,12 @@ BUNIUM_LINUX_EXPORT void* bunium_create_sublayer(void* window_handle, int x,
   h->abs_w = width;
   h->abs_h = height;
 
+  // width/height (like x/y above) are logical px -- RepositionSublayer
+  // (called below) immediately resizes to physical px, so the initial size
+  // here just needs to be non-zero, not exactly right.
+  int phys_w = std::max(1, static_cast<int>(width * h->scale));
+  int phys_h = std::max(1, static_cast<int>(height * h->scale));
+
   int screen = DefaultScreen(d);
   XSetWindowAttributes attrs = {};
   attrs.background_pixel = BlackPixel(d, screen);
@@ -501,8 +803,8 @@ BUNIUM_LINUX_EXPORT void* bunium_create_sublayer(void* window_handle, int x,
   attrs.event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask |
                       PointerMotionMask;
   Window window = XCreateWindow(
-      d, RootWindow(d, screen), 0, 0, std::max(1, width), std::max(1, height),
-      0, DefaultDepth(d, screen), InputOutput, DefaultVisual(d, screen),
+      d, RootWindow(d, screen), 0, 0, phys_w, phys_h, 0,
+      DefaultDepth(d, screen), InputOutput, DefaultVisual(d, screen),
       CWBackPixel | CWOverrideRedirect | CWEventMask, &attrs);
   if (!window) {
     DeleteHandle(h);

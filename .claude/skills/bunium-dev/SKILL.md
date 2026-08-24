@@ -106,17 +106,30 @@ cross-platform packaging/signing/updates, native OS color-scheme sync, a typed I
 
 ## Phase 6 — Linux port (full examples/ sweep green, 2026-08-22)
 
-- **Dev/build/test is Docker-only** (`docker/linux/`) since this session's host is macOS, no
-  native Linux desktop available. `Dockerfile` = arm64 Ubuntu 24.04 (matches Docker Desktop's
-  native platform on Apple Silicon, avoids QEMU) with the clang/cmake/X11-dev/Chromium-runtime-
-  dep/Xvfb toolchain. `fetch-cef.sh` downloads the pinned CEF linuxarm64/linux64 distro (10MB
-  chunks -- this network path caps a single response at 10MB) + builds `libcef_dll_wrapper` via
-  cmake/ninja. `run-examples.sh` runs every `examples/*.ts` sequentially under Xvfb (same
-  ProcessSingleton one-at-a-time rule as every other platform) with a PASS/FAIL summary. Build:
-  `docker build -t bunium-linux-dev -f docker/linux/Dockerfile .` then
+- **Dev/build/test works both in Docker and directly on a real Linux host** -- `docker/linux/`
+  scripts (`fetch-cef.sh`, `native/linux/build.sh`, `run-examples.sh`) run unmodified either
+  way; only Xvfb + build toolchain are required, not Docker itself. Re-validated on bare-metal
+  Debian 12 arm64 in a later session with identical results to the original Docker sweep (see
+  Phase 6 real-hardware note in PLAN.md). Use Docker for reproducible/CI builds; use the host
+  directly for faster iteration when a real Linux machine is available.
+  `Dockerfile` (only needed for the Docker path) = arm64 Ubuntu 24.04 (matches Docker Desktop's
+  native platform on Apple Silicon, avoids QEMU) with the g++/cmake/X11-dev/Chromium-runtime-
+  dep/Xvfb toolchain -- same package set needed on a bare host (`build-essential cmake
+  ninja-build pkg-config libx11-dev libxext-dev libdbus-1-dev libgtk-3-dev xvfb`). `fetch-cef.sh`
+  downloads the pinned CEF linuxarm64/linux64 distro (10MB chunks -- this network path caps a
+  single response at 10MB) + builds `libcef_dll_wrapper` via cmake/ninja. `run-examples.sh` runs
+  every `examples/*.ts` sequentially under Xvfb (same ProcessSingleton one-at-a-time rule as
+  every other platform) with a PASS/FAIL summary.
+  Docker: `docker build -t bunium-linux-dev -f docker/linux/Dockerfile .` then
   `docker run --rm -v "$(pwd)":/work -w /work bunium-linux-dev bash docker/linux/fetch-cef.sh`
   then `... bash native/linux/build.sh` then `... -e LD_LIBRARY_PATH=/work/native/build-linux
   ... bash docker/linux/run-examples.sh`.
+  Bare host: `bash docker/linux/fetch-cef.sh` then `bash native/linux/build.sh` then
+  `Xvfb :99 -screen 0 1024x768x24 & export DISPLAY=:99
+  LD_LIBRARY_PATH=native/build-linux; bash docker/linux/run-examples.sh`. **Gotcha:** `bun`
+  installed via the official installer lands in `~/.bun/bin/`, which is not reliably on `PATH`
+  in every shell invocation -- always `export PATH="$HOME/.bun/bin:$PATH"` explicitly rather
+  than relying on `~/.bashrc` having been sourced.
 - **`native/linux/build.sh` builds with g++, not clang++.** CEF's own cmake-built
   `libcef_dll_wrapper.a` on this Ubuntu image resolves to g++; linking a clang++-compiled
   `bunium_shim.cpp` against it segfaulted immediately inside `CefInitialize` (confirmed via gdb:
@@ -127,7 +140,7 @@ cross-platform packaging/signing/updates, native OS color-scheme sync, a typed I
   `native/mac/bunium_shim.cpp`/`subprocess_main.cpp`/`bunium_bsdiff_wrap.mm` compile unchanged
   (already proven platform-agnostic by Windows); Linux-specific sources: `bunium_window_linux.cc`
   (real Xlib window + sublayers, XPutImage software blit, X11 Shape extension for sublayer
-  clipping, no DPI scaling yet), `bunium_system_events_linux.cc` (shared system-event inbox),
+  clipping, real DPI scaling + EWMH resize-edge/drag, see below), `bunium_system_events_linux.cc` (shared system-event inbox),
   `bunium_system_notify_linux.cc` (real D-Bus notifications), `bunium_system_dialogs_linux.cc`
   (real GTK dialogs), `bunium_system_tray_linux.cc` (real D-Bus StatusNotifierItem tray), and
   `bunium_system_linux_stub.cc` (menu only -- deliberately deferred, see below).
@@ -190,13 +203,45 @@ cross-platform packaging/signing/updates, native OS color-scheme sync, a typed I
   invocation resolves ~110 packages, blowing the test's 10s ready-timeout) but passed cleanly
   once `bunx`'s cache was warm -- not a bunium bug.
 - **v1 scope gaps, deliberate** (matches "repeat Phase 0-1, not full parity" plan note): X11
-  only (no Wayland); no DPI/HiDPI scaling; native menu bar deferred (see above); tray `setIcon`
-  (arbitrary image file) is a no-op, only `setSymbol` (icon-theme name) works; no synthetic
-  resize-edge/draggable-region hit-testing for frameless windows; sublayers paint opaque only
-  (no alpha compositing, needs a real compositor); no packaging/distribution mechanism yet
-  (`docker/linux/` is dev/test only). **Not a gap:** the mac `OnBeforeContextMenu` right-click-
-  crash fix lives in shared `bunium_common.h` with no platform guard, so it already applies to
-  Linux for free.
+  only (no Wayland); native menu bar deferred (see above); tray `setIcon`
+  (arbitrary image file) is a no-op, only `setSymbol` (icon-theme name) works; sublayers paint
+  opaque only (no alpha compositing, needs a real compositor); no packaging/distribution
+  mechanism yet (`docker/linux/` is dev/test only). **Not a gap:** the mac `OnBeforeContextMenu`
+  right-click-crash fix lives in shared `bunium_common.h` with no platform guard, so it already
+  applies to Linux for free.
+- **DPI/HiDPI scaling implemented (real hardware, 2026-08-22).** `DetectX11Scale()` in
+  `bunium_window_linux.cc`: `GDK_SCALE` env var first (GTK convention), else `Xft.dpi` X
+  resource (`XrmGetResource`) -> `dpi/96.0`, clamped `[0.5,4.0]`, falls back to 1.0. X11 has no
+  native "windows have a DPI" concept the way Win32 (`GetDpiForWindow`) or mac
+  (`backingScaleFactor`) do -- the DE communicates it via this X-resource convention instead,
+  same source every DE-aware toolkit (GTK/Qt) reads. Detected once at window-creation, no
+  live-change tracking. Logical(CSS)-px/physical-px conversion happens at every native
+  geometry/coordinate call site (`XCreateWindow`, size hints, `XMoveResizeWindow`,
+  `XShapeCombineRectangles`, mouse-event coords), mirroring win's `PhysToLogical`/
+  `LogRectToPhysical` pattern. Validated at scale 1.0 and `GDK_SCALE=2` (window size,
+  hit-testing, screenshot dims all correct).
+- **Synthetic resize-edge/draggable-region hit-testing implemented (real hardware,
+  2026-08-22), via EWMH `_NET_WM_MOVERESIZE`, not a manual drag loop.** Unlike mac (which
+  fully owns the drag itself via `performWindowDragWithEvent:`/manual `ApplyResizeDelta`),
+  Linux hands the whole move/resize off to the window manager by sending a
+  `_NET_WM_MOVERESIZE` `ClientMessage` to the root window -- the same convention GTK/Qt's own
+  client-side-decoration windows use, gets snapping/multi-monitor edge behavior for free.
+  `ResizeDirectionAtPoint()` does the same 6px-border test as mac/win; wired into
+  `bunium_window_pump_events`'s `ButtonPress` case for frameless top-level windows, same
+  priority order as mac's `mouseDown:` (resize edge checked before draggable region).
+  **Testing note worth reusing for future Linux input-path work:** verified end-to-end (not
+  just no-crash) via a standalone ad hoc harness, `native/linux/test-resize-moveresize.cc`
+  (build/run instructions in its own header, not part of `build.sh`) that uses
+  `XTestFakeButtonEvent`/`XTestFakeMotionEvent` (libXtst) to synthesize a *real* X11 input
+  event through the actual X server, drives it through the real `bunium_window_pump_events`
+  loop, and checks for the resulting `_NET_WM_MOVERESIZE` `ClientMessage` on root. Works
+  *without* a WM installed -- `XSendEvent` delivers unconditionally to any client selecting
+  `SubstructureNotifyMask` on root, no `SubstructureRedirect` owner needed just to observe the
+  message. This is a stronger automated check than mac/win have today for their own
+  resize-edge code (both explicitly document that their raw-FFI dispatch test helpers bypass
+  the real OS mouse-handler code path entirely). Actual WM-driven visual drag/resize was NOT
+  verified this session (no WM available on the bare-host test env, no passwordless sudo to
+  install one) -- remains a manual follow-up, same class of gap mac/win already carry.
 
 ## Phase 8 — macOS packaging (verified working 2026-08-17)
 

@@ -869,9 +869,24 @@ real apps get a per-app `root_cache_path` at packaging (Phase 8) anyway.
 
 ## Phase 6 — Linux port
 
-**Status: full examples/ sweep green (2026-08-22), X11 windowing only (v1 scope, no
-Wayland).** Repeated Phase 0-1 validation for this platform rather than assuming macOS/Windows
-findings transfer -- two real, Linux-specific bugs found and fixed along the way (below).
+**Status: full examples/ sweep green (2026-08-22, Docker; re-validated on bare-metal real
+Linux hardware in a later session), X11 windowing only (v1 scope, no Wayland).** Repeated
+Phase 0-1 validation for this platform rather than assuming macOS/Windows findings transfer --
+two real, Linux-specific bugs found and fixed along the way (below).
+
+**Real-hardware re-validation (bare-metal Debian 12 arm64, no Docker):** everything documented
+below as Docker-only also works unmodified directly on a real Linux host -- `docker/linux/
+fetch-cef.sh` and `native/linux/build.sh` both ran successfully outside any container, and
+`docker/linux/run-examples.sh` itself runs fine on bare metal too (it only needs Xvfb +
+optionally a D-Bus session bus, not Docker itself). Sweep result matched the Docker baseline
+exactly: 35/37 immediate PASS, `color-scheme-live-test.ts` fails as expected (mac-only
+`osascript`), and `vite-dev-test.ts` passes once `bunx` has a warm cache for the `vite` package
+(same "stone-cold container" caveat already documented below, confirmed to be the same root
+cause on real hardware, not Docker-specific) -- true steady-state Linux pass rate 36/37, one
+expected platform-skip. No new native-host-specific bugs found (X11 direct vs. Xvfb, real
+D-Bus session bus vs. the fake test daemons -- all behaved identically). Docker remains a valid
+option for reproducible/CI builds, but is no longer the only supported way to build/dev/test
+Linux locally.
 
 `docker/linux/` is the dev/build/test environment (arm64 Ubuntu 24.04 container -- matches
 Docker Desktop's native platform on Apple Silicon, avoiding QEMU emulation for the CEF build):
@@ -950,8 +965,8 @@ element,hit,stacking}`, typed IPC both directions, `bsdiff`/`update-journal`/`up
 - This session's separate `OnBeforeContextMenu` fix (suppressing CEF's unsupported-in-OSR
   default context menu, which crashed the whole process on right-click) lives in the shared
   `bunium_common.h` with no platform guard, so it already applies to Linux for free -- no
-  Linux-specific work needed, confirmed by inspection (not yet exercised by a real right-click,
-  same untestable-without-a-desktop category as mac's own verification of it).
+  Linux-specific work needed. **Verified 2026-08-24 against a real right-click, not just by
+  inspection** -- see the real-desktop verification section below.
 
 **Phase 5 system surface (2026-08-22): notifications, dialogs, and tray are real; menu is
 deferred.**
@@ -1002,6 +1017,20 @@ deferred.**
   alongside the existing Xlib one just to host a menu bar, or (b) a DE-specific D-Bus protocol
   with no universal fallback -- both are real architectural decisions, not a quick vertical
   slice like notify/dialogs/tray were. Tracked as open Phase 6 v2 scope.
+- **Deferral confirmed after deeper D-Bus protocol research (2026-08-23):** option (b) is
+  *more* fragmented than the tray's StatusNotifierItem precedent suggested it might be, not
+  less. KDE's own AppMenu mechanism (`_KDE_NET_WM_APPMENU_SERVICE_NAME`/`_OBJECT_PATH` X11
+  window properties + the `com.canonical.dbusmenu` D-Bus interface) only activates when the
+  optional, non-default `kappmenu` KWin script/applet is enabled by the user -- it is not a
+  bare-KDE-install guarantee the way SNI is a bare-KDE/GNOME guarantee for tray. GNOME has no
+  support for this protocol at all; it has its own separate, extension-gated, incompatible
+  `org.gtk.Menus`/`org.gtk.Actions` mechanism. Unity's `com.canonical.AppMenu` is dead
+  (Unity itself is dead). There is no single D-Bus menu protocol with SNI-level broad native
+  support -- implementing any one of them would be a narrow, single-DE, opt-in-applet-only
+  slice, not the "real but DE-scoped, broadly useful" pattern tray achieved. **Decision: v1
+  ships the honest no-op stub (`bunium_system_linux_stub.cc`), no D-Bus AppMenu attempt.**
+  Revisit only if a future session decides an in-window GTK/Qt menu bar (option a) is worth
+  the toolkit-window investment.
 - **All three real (notify/dialogs/tray) verified end-to-end, not just no-crash**, via
   throwaway dev/test-only fake D-Bus services (not shipped, not built by
   `native/linux/build.sh`): `docker/linux/fake_notify_daemon.c` (owns
@@ -1011,20 +1040,175 @@ deferred.**
   and `Activate()` back on it -- proved property serving and click delivery both round-trip).
   Full `examples/` sweep still 35/37 (same two environment-limited non-bugs as before).
 
+**Real-hardware follow-on work (2026-08-22, bare-metal Debian 12 arm64):**
+- **DPI/HiDPI scaling implemented.** `bunium_window_get_scale` now returns a real detected
+  scale instead of hardcoded 1.0: `DetectX11Scale()` in `bunium_window_linux.cc` checks the
+  `GDK_SCALE` env var first (GTK convention, int 1-4), else reads the `Xft.dpi`/`Xft.Dpi` X
+  resource via `XrmGetResource` and computes `dpi/96.0` (96 = scale 1.0, matches Win32), clamped
+  to `[0.5, 4.0]`, falling back to 1.0 if neither source is available (matches plain Xvfb/no-DE
+  environments). Detected once at window-creation time, no live-DPI-change tracking. All native
+  geometry call sites (`XCreateWindow`, `XSetWMNormalHints` size hints, `XMoveResizeWindow` for
+  sublayers, `XShapeCombineRectangles` for clip regions, mouse-event coordinate forwarding)
+  convert between logical (CSS) px -- the cross-platform JS-facing contract -- and physical px
+  at the boundary, mirroring the pattern already used in `bunium_window_win.cc`
+  (`PhysToLogical`/`LogRectToPhysical`). Validated on real hardware at scale 1.0 (no regressions,
+  full sweep) and with `GDK_SCALE=2` (window physical size, mouse/click hit-testing at both
+  sublayer and webview-clip levels, and screenshot pixel dimensions all confirmed correct at 2x).
+- **Synthetic resize-edge + draggable-region hit-testing implemented for frameless windows,**
+  using the EWMH `_NET_WM_MOVERESIZE` client-message convention (the same mechanism GTK/Qt's own
+  client-side-decoration windows use) instead of mac's fully-synthetic drag-loop approach --
+  `ResizeDirectionAtPoint()` in `bunium_window_linux.cc` does the same 6px-border geometry test
+  as mac's `ResizeEdgeAtPoint`/win's `WM_NCHITTEST` edge math, and `SendNetWmMoveResize()` hands
+  the actual move/resize off to the window manager entirely (gets snapping/multi-monitor/edge-
+  resistance for free, same delegation model as mac's `performWindowDragWithEvent:`). Wired into
+  `bunium_window_pump_events`'s `ButtonPress` case, frameless (`frame_enabled=false`) top-level
+  windows only, same priority order as mac's `mouseDown:` (resize edge wins over an overlapping
+  draggable region). Verified end-to-end -- not just no-crash -- via a standalone XTest-based
+  harness (`native/linux/test-resize-moveresize.cc`, ad hoc build/run instructions in its header
+  comment, not part of `build.sh`/the examples sweep) that synthesizes a real `ButtonPress` via
+  `XTestFakeButtonEvent`/`XTestFakeMotionEvent` through the actual X server and confirms the
+  expected `_NET_WM_MOVERESIZE` `ClientMessage` (or correctly, its absence for a non-edge/non-drag
+  click) is observed on the root window after a real pass through `bunium_window_pump_events` --
+  a stronger automated check than mac/win currently have for the equivalent code (both
+  explicitly document in `frameless-resize-test.ts` that raw-FFI dispatch bypasses their real
+  mouse handlers entirely). Actually completing a WM-driven drag/resize was not visually verified
+  (no WM installed in the no-network-passwordless-sudo bare-host test environment used this
+  session) -- remains a manual/visual follow-up, same category as mac/win's own acknowledged gap.
+  **Resolved 2026-08-23, see below: this exposed a real bug.**
+
+**WM-driven resize/drag + alpha compositing, verified against real openbox+picom (2026-08-23):**
+- Installed openbox (WM) and picom (compositor) on the bare-metal Debian 12 arm64 host and ran
+  Xvfb `:99` with `+extension COMPOSITE +extension RENDER` (needed for picom). This let two
+  previously-synthetic-only-verified code paths finally be checked against real WM/compositor
+  behavior instead of just XTest message injection or CEF's own internal buffer.
+- **Found and fixed a real bug: frameless windows used `override_redirect=True` to hide
+  decorations, which is fundamentally incompatible with WM-driven resize/drag.** Override-
+  redirect windows are, by X11 definition, invisible to `SubstructureRedirect`, so a real WM
+  never sees (and thus never responds to) the `_NET_WM_MOVERESIZE` ClientMessage that
+  `SendNetWmMoveResize()` sends -- openbox silently ignored every resize/drag attempt on a
+  frameless bunium window. This was undetectable by the prior XTest-only test
+  (`test-resize-moveresize.cc`) because that test only proves the message is *sent*, never that
+  anything *responds*. Fixed in `bunium_window_create` by replacing `override_redirect`
+  toggling with the standard `_MOTIF_WM_HINTS` decoration-hiding mechanism (same one GTK/Qt use
+  for client-side decorations: `MotifWmHints{flags=MWM_HINTS_DECORATIONS, decorations=0}` via
+  `XChangeProperty`), which keeps the window WM-managed. Added a new real-WM-driven test,
+  `native/linux/test-resize-real-wm.cc`, which synthesizes a full border-drag-with-motion
+  sequence and checks *actual window geometry* before/after (400px -> 460px width, confirmed) --
+  the first proof in this project that resize-edge hand-off produces a real on-screen resize
+  under a real WM, not just a correctly-sent protocol message.
+- **Alpha compositing implemented for real (previously only alpha-byte-correct-but-never-
+  displayed).** `bunium_window_linux.cc` always created windows with `DefaultVisual`/depth 24
+  regardless of `transparent`, so the alpha channel painted by `BlitFrame` was silently
+  discarded by the X server before it ever reached the screen -- `transparent-window-test.ts`
+  still passed because it only reads CEF's own internal OSR buffer via `captureScreenshot()`,
+  which never touches the X server/compositor at all (a real test-coverage gap, since fixed --
+  see `native/linux/test-alpha-hold.ts` below). Fixed by adding `FindArgbVisual()` (uses
+  `XGetVisualInfo` to find a 32-bit TrueColor visual, preferring one with a nonzero alpha mask)
+  and, when `transparent=true`, creating the window with that visual + a matching `AllocNone`
+  colormap + `border_pixel=0` (required for non-default-depth `XCreateWindow`) instead of the
+  default; falls back gracefully to a normal opaque window if no ARGB visual exists (matches the
+  file's existing pattern for missing environment capabilities, e.g. `DetectX11Scale`'s 1.0
+  fallback). `BlitFrame` now builds its `XImage` at the window's actual resolved visual/depth
+  instead of a hardcoded `DefaultVisual`/24, since `XPutImage` silently drops the alpha byte if
+  the image depth doesn't match the window's. Verified against a real compositor: a plain
+  solid-color X11 reference window placed behind the transparent bunium window, screenshotted
+  via `import -window root` (ImageMagick, reads the true composited output through picom, unlike
+  a raw `XGetImage` on the bare root window) and sampled -- the reference window's color shows
+  correctly through the transparent area (not the opaque-black the pre-fix bug would have
+  produced), while the opaque red square still renders correctly on top. New verification
+  fixture: `native/linux/test-alpha-hold.ts` (uses the real `BuniumWindow`/`app.init()` path, so
+  CEF init is handled automatically -- a from-scratch raw-dlopen C++ harness was tried first and
+  crashed with a CEF-internal fatal error from skipping `bunium_init()`, and was abandoned in
+  favor of this TS fixture) + `native/linux/test-alpha-bg-window.cc` (the solid-color reference
+  window; painting the X11 root background directly was tried first but proved unreliable, since
+  picom doesn't composite a bare root background the way a compositor-less `XClearWindow` does).
+  Full `examples/` sweep re-run with no regressions.
+- Both fixes are Linux-specific (`bunium_window_linux.cc` only); mac/win were not touched.
+
+**Real-desktop verification (GNOME Shell 43.6, real gdm3/Xwayland session on `:0`, not
+headless Xvfb), 2026-08-24:** this host also has a real logged-in GNOME desktop session
+(`gdm3` on tty2, `gnome-shell` PID owning `:0` + `wayland-0`, real D-Bus session bus at
+`/run/user/1000/bus`), which closed several previously-inspection-only or fake-daemon-only
+gaps:
+- **Notifications**: `dbus-monitor`'d the real session bus while running
+  `examples/system-notifications-test.ts` against `:0` (not the Docker fake-daemon setup) --
+  confirmed the real `org.freedesktop.Notifications.Notify` call is received and forwarded to
+  GNOME Shell's actual handler (visible as a second internal `Notify` call tagged with
+  `sender-pid`), not just accepted by a fake stub. Real delivery proven, not just no-crash.
+- **Dialogs**: `examples/system-dialogs-test.ts` ran clean against the real X11 session -- real
+  `GtkFileChooserDialog`/`GtkMessageDialog` created against the actual live GTK/desktop theme
+  (not headless Xvfb), no crash.
+- **Context menu**: new fixture `native/linux/test-context-menu.ts` (same
+  `bunium_dispatch_mouse_click` ABI `examples/mouse-click-test.ts` already uses for left-clicks,
+  `button=2` -> `MBT_RIGHT`) dispatches a real right-click through CEF's actual Views/GTK
+  context-menu codepath on the live desktop -- process survives, page's own `contextmenu` JS
+  handler still fires (proving `OnBeforeContextMenu` suppresses only CEF's native menu, not
+  page-level handling), closing the previously-inspection-only gap noted above.
+- **Tray click**: GNOME Shell 43 ships no built-in `org.kde.StatusNotifierWatcher` provider by
+  default -- user installed `gnome-shell-extension-appindicator` (apt) + enabled it
+  (`gnome-extensions enable ubuntu-appindicators@ubuntu.com`, required a logout/login under
+  Wayland since GNOME Shell can't hot-reload newly-installed extensions like on X11). Once
+  enabled, `org.kde.StatusNotifierWatcher` registers for real. New fixture
+  `native/linux/test-tray-click.ts` proves the FULL click pipeline against the real watcher: (1)
+  `dbus-monitor` confirms bunium's `RegisterStatusNotifierItem` call reaches the real watcher
+  and it broadcasts `StatusNotifierItemRegistered`/`Unregistered` (genuine desktop-level
+  registration, not a stub); (2) the fixture then calls `Activate(0,0)` directly on bunium's own
+  registered `org.kde.StatusNotifierItem-<pid>-<id>` D-Bus service/object path -- this IS the
+  real click-delivery mechanism a StatusNotifierWatcher-driven desktop (GNOME Shell+
+  AppIndicator, KDE Plasma) uses on an actual physical click, not a shortcut -- and confirms
+  `onClick()`'s JS callback fires with the correct tray id. Both notifications and tray-click
+  gaps are now closed.
+
 **Known v1 scope gaps (deliberate, matches the "repeat Phase 0-1, not full parity" plan note):**
-- X11 only, no Wayland.
-- No DPI/HiDPI scaling (`bunium_window_get_scale` always returns 1.0).
-- Native context-menu suppression (`OnBeforeContextMenu`) already applies via shared
-  `bunium_common.h` (see above) -- not a gap, just unverified by an actual right-click yet.
+- X11 only, no Wayland (Xwayland compat verified via the real-desktop testing above, but no
+  Wayland-native backend exists or is planned for v1).
 - Native menu bar is stub-only, deferred pending real design work (see above).
 - Tray `setIcon` (arbitrary image file) is a documented no-op; only `setSymbol` (icon-theme
-  name) works.
-- No synthetic resize-edge/draggable-region hit-testing for frameless windows (mac's
-  `BuniumContentView` resize-bar code not ported).
-- Sublayers paint opaque only, no alpha compositing (needs a running compositor + 32-bit ARGB
-  visual, unlike a plain Xvfb/no-WM dev environment).
-- Packaging (Phase 8 equivalent) not started for Linux -- `docker/linux/` is a dev/test
-  environment only, not a distribution mechanism.
+  name) works. Tray click itself IS verified end-to-end against a real desktop panel (see
+  above) -- `setIcon` and `setMenu` remain no-ops, not the click path.
+
+**Packaging (Phase 8 equivalent) — done (2026-08-23):** `packaging/linux/package.sh` produces
+a flat `Name/{Name (shell launcher), bun, Runtime/, app/}` directory, modeled on
+`packaging/win/package.sh`'s flat layout but with a plain shell-script launcher instead of a
+compiled one (Linux has neither Windows' console-flash problem nor its shebang-exec
+limitation, so a shell script is sufficient -- mirrors macOS' own launcher approach instead).
+`Runtime/` merges `bunium_shim.so`/`bunium_subprocess`/`libcef.so`/`icudtl.dat`/
+`v8_context_snapshot.bin`/paks/`locales/` into one directory, deliberately matching
+`native/linux/build.sh`'s own `native/build-linux/` layout, because Chrome-runtime resolves
+these relative to `libcef.so`'s own directory (`base::DIR_MODULE`), not
+`CefSettings.resources_dir_path`. `--verify` reuses the shared `packaging/mac/fixture-app` (the
+same fixture win already reuses) and was confirmed PASS against a real `Xvfb :99` on the bare
+Debian arm64 host -- no WM install needed, since it's a screenshot pixel-check, not interactive
+drag/resize. True `.deb`/AppImage/rpm distribution packaging is an explicitly deferred v2
+follow-up (host has `dpkg-deb`+`fakeroot` but not `appimagetool`/`rpmbuild`) -- this flat
+directory is the pragmatic v1, same "ship what's proven, document the gap" pattern as the menu
+bar decision above.
+
+**Investigated and resolved: no Linux-specific `locales_dir_path` branch needed in
+`bunium_shim.cpp`'s `bunium_init()`** (unlike the existing `#if defined(_WIN32)` branch).
+`cef_types.h`'s own doc comment states an empty `locales_dir_path` defaults to "the module
+directory" (the dir `libcef.so`/`.dll` is loaded from) -- not "icudtl.dat's dir" as an earlier
+code comment assumed. Windows needs the explicit override because its packaged layout splits
+`libcef.dll` (`Release/`) from `locales/` (`Resources/`); Linux's dev tree, packaged app, and
+platform package all keep `libcef.so` and `locales/` colocated in one directory, so CEF's
+default resolution already works. This is a packaging-layout invariant now documented directly
+in `bunium_init()` -- any future Linux layout that separates the two would need an explicit
+`__linux__` branch added.
+
+**Platform package (Phase 11 equivalent, `bunium-linux-<arch>`) — done (2026-08-23):**
+`scripts/stage-release-artifacts-linux.sh` (parallel to the darwin-only
+`scripts/stage-release-artifacts.sh`, arch-detected via `uname -m`) produces
+`dist-release/bunium-linux-<arch>/{shim/,framework/}` + a gated `package.json` (`os`/`cpu`).
+No `install_name_tool`-equivalent rewrite step is needed (Linux's `$ORIGIN`-relative rpath,
+baked in at build time by `native/linux/build.sh`, already makes the binaries
+location-independent) -- pure file copies suffice. `scripts/verify-platform-package-linux.sh`
+(parallel to `scripts/verify-platform-package.sh`) proves the installed-consumer resolution
+path end to end via a materialized `node_modules/bunium` + symlinked platform package, reusing
+the same platform-agnostic `scripts/verify-platform-package-main.ts` fixture mac already uses.
+Confirmed `PLATFORM-PACKAGE-SMOKE PASS` on the real host. `bunium-linux-<arch>` is not yet
+added to root `package.json`'s `optionalDependencies` (deferred until an actual publish/release
+decision is made -- the staging+verify scripts already prove the mechanism works without
+touching the real consumer-facing dependency list).
 
 ## Phase 7 — Windows port
 

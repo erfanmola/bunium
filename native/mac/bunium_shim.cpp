@@ -232,11 +232,21 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
   // CefSettings.framework_dir_path is macOS-only. Windows CEF keeps its
   // resources (.pak/.dat/.bin) flat in resources_dir_path with locales/
   // hanging off it; Chromium won't find them without an explicit
-  // locales_dir_path (default is "icudtl.dat's dir/locales", which is only
-  // right for the standard CEF sample layout).
+  // locales_dir_path. Per cef_types.h, an empty locales_dir_path defaults
+  // to "the module directory" (the dir libcef.dll/.so is loaded from) --
+  // NOT resources_dir_path -- and Windows' packaging layout (see
+  // packaging/win/package.sh) puts locales/ under Resources/, separate
+  // from Release/ (where libcef.dll lives), so the default would miss.
   std::string locales_dir = std::string(resources_dir_path) + "/locales";
   CefString(&settings.locales_dir_path).FromASCII(locales_dir.c_str());
 #endif
+  // No __linux__ branch needed here: Linux's dev tree (native/build-linux/)
+  // and packaged layout (packaging/linux/package.sh's Runtime/) both keep
+  // libcef.so colocated with locales/ in the same directory, so CEF's
+  // default "module directory" derivation already resolves correctly.
+  // This is a packaging-layout invariant, not a code guarantee -- any
+  // future Linux layout change must keep libcef.so + locales/ together,
+  // or add an explicit branch here like Windows'.
   // Per-app profile dir (packaged .app launchers pass a per-app Application
   // Support path). Empty string = CEF's shared default profile, which is
   // what dev processes want -- a per-app root_cache_path avoids two crunchy
