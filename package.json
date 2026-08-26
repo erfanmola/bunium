@@ -1,11 +1,27 @@
 {
   "name": "bunium",
   "version": "0.0.1",
+  "description": "Electron-like desktop app framework — Bun + CEF, not Node + Chromium-via-Electron.",
+  "keywords": [
+    "bun",
+    "cef",
+    "chromium",
+    "electron-alternative",
+    "desktop"
+  ],
   "license": "MIT",
   "type": "module",
   "main": "src/index.ts",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/erfanmola/bunium.git"
+  },
+  "homepage": "https://github.com/erfanmola/bunium#readme",
+  "bugs": {
+    "url": "https://github.com/erfanmola/bunium/issues"
   },
   "files": [
     "src/",

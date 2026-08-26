@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640">
+  <title>bunium — Electron-like framework: Bun + CEF + TypeScript</title>
+  <rect x="0" y="0" width="1280" height="640" fill="#14161c"/>
+
+  <g transform="translate(120,144) scale(0.6875)">
+    <rect x="0" y="0" width="512" height="512" rx="104" fill="#1c1f28"/>
+    <rect x="176" y="120" width="48" height="272" rx="24" fill="#f4c15c"/>
+    <circle cx="280" cy="328" r="88" fill="#f4c15c"/>
+    <rect x="246" y="302" width="66" height="66" rx="16" fill="#5b8def" stroke="#1c1f28" stroke-width="8"/>
+  </g>
+
+  <text x="600" y="300" font-family="Helvetica Neue, Arial, sans-serif" font-size="108" font-weight="700" fill="#f5f6f8">bunium</text>
+  <text x="604" y="360" font-family="Helvetica Neue, Arial, sans-serif" font-size="28" fill="#9a9ea8">Electron-like framework — Bun + CEF + TypeScript</text>
+
+  <g font-family="Helvetica Neue, Arial, sans-serif" font-size="24" fill="#6b7280">
+    <circle cx="608" cy="430" r="6" fill="#f4c15c"/>
+    <text x="626" y="438">Real Chromium via CEF</text>
+
+    <circle cx="608" cy="470" r="6" fill="#5b8def"/>
+    <text x="626" y="478">DOM &lt;bunium-webview&gt; + typed IPC</text>
+
+    <circle cx="608" cy="510" r="6" fill="#f4c15c"/>
+    <text x="626" y="518">macOS · Linux · Windows</text>
+  </g>
+</svg>
