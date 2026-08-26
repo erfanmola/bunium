@@ -1,0 +1,93 @@
+name: macOS smoke
+
+# Builds the native macOS stack and runs the basic-window example + a
+# packaged-fixture-app verify as a smoke test on every PR touching
+# native/src and on main pushes. Mirrors win-smoke.yml/linux-smoke.yml's
+# structure; CEF fetch/build steps mirror release.yml's darwin-arm64 job.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "native/**"
+      - "src/**"
+      - "package.json"
+      - "bun.lock"
+      - "packaging/**"
+      - ".github/workflows/mac-smoke.yml"
+  pull_request:
+    paths:
+      - "native/**"
+      - "src/**"
+      - "package.json"
+      - "bun.lock"
+      - "packaging/**"
+      - ".github/workflows/mac-smoke.yml"
+
+env:
+  # Must match vendor/cef-macosarm64; mirrors release.yml's pin.
+  CEF_VERSION: "151.3.16+gbe1e15d+chromium-151.0.7922.109"
+  CEF_SHA1: "9686f8f6ef1343aa813af2c200db29f8b95abe7f"
+
+jobs:
+  build-and-smoke:
+    runs-on: macos-14 # arm64 -- matches the macosarm64 CEF distro
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Fetch CEF distro (git-ignored)
+        run: |
+          if [ -d vendor/cef-macosarm64/Release ]; then
+            echo "CEF distro already present"
+            exit 0
+          fi
+          archive="cef_binary_${CEF_VERSION}_macosarm64_minimal.tar.bz2"
+          curl -fL --retry 3 -o "$archive" \
+            "https://cef-builds.spotifycdn.com/${archive}"
+          actual="$(shasum -a 1 "$archive" | awk '{print $1}')"
+          [ "$actual" = "$CEF_SHA1" ] || {
+            echo "::error::CEF sha1 mismatch: expected $CEF_SHA1 got $actual"
+            exit 1
+          }
+          mkdir -p vendor
+          tar -xjf "$archive" -C vendor
+          mv "vendor/cef_binary_${CEF_VERSION}_macosarm64_minimal" \
+            vendor/cef-macosarm64
+
+      - name: Build libcef_dll_wrapper
+        run: |
+          cmake -S vendor/cef-macosarm64 -B vendor/cef-macosarm64/build
+          cmake --build vendor/cef-macosarm64/build --target libcef_dll_wrapper
+
+      - run: bun install
+
+      - name: Build native stack
+        run: bun run build:native:mac
+
+      - name: Smoke — basic-window example
+        timeout-minutes: 3
+        run: |
+          bun examples/basic-window.ts 2>&1 | tee smoke.log
+          grep -q "frameCount" smoke.log
+
+      - name: Package fixture app + verify packaged run
+        timeout-minutes: 8
+        run: |
+          bash packaging/mac/package.sh \
+            -a packaging/mac/fixture-app -n BuniumFixture \
+            -i com.bunium.fixture -o dist-app 2>&1 | tee pack.log
+          ./dist-app/BuniumFixture.app/Contents/MacOS/BuniumFixture 2>&1 | tee pack-verify.log
+          grep -q "PACKAGED_APP_VERIFY:PASS" pack-verify.log
+
+      - name: Upload logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-smoke-logs
+          path: |
+            smoke.log
+            pack.log
+            pack-verify.log
+          retention-days: 7
