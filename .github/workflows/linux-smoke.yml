@@ -1,0 +1,95 @@
+name: Linux smoke
+
+# Builds the native Linux stack (g++, matching native/linux/build.sh's own
+# g++-only requirement -- see that script's header for why clang++ against a
+# g++-built libcef_dll_wrapper.a is a real ABI-mismatch hazard, not
+# theoretical) and runs the full examples/ sweep as a smoke test on every PR
+# touching native/src and on main pushes. Mirrors win-smoke.yml's structure;
+# see docker/linux/ for the same steps run locally in a container.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "native/**"
+      - "src/**"
+      - "package.json"
+      - "bun.lock"
+      - "packaging/**"
+      - ".github/workflows/linux-smoke.yml"
+  pull_request:
+    paths:
+      - "native/**"
+      - "src/**"
+      - "package.json"
+      - "bun.lock"
+      - "packaging/**"
+      - ".github/workflows/linux-smoke.yml"
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    env:
+      BUNIUM_LINUX_ARCH: x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build + runtime deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang lld cmake ninja-build pkg-config \
+            curl ca-certificates bzip2 unzip git \
+            libx11-dev libxrandr-dev libxrender-dev libxext-dev libxfixes-dev \
+            libxi-dev libxcursor-dev libxdamage-dev libxcomposite-dev libxtst-dev \
+            libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 \
+            libdrm2 libgbm1 libasound2t64 libpango-1.0-0 libcairo2 libgtk-3-0t64 \
+            xvfb x11-utils imagemagick gdb \
+            dbus dbus-x11 libdbus-1-dev libglib2.0-dev libgtk-3-dev \
+            libdbusmenu-glib-dev libdbusmenu-gtk3-dev
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Fetch CEF distro (git-ignored)
+        run: bash docker/linux/fetch-cef.sh
+
+      - name: Build native stack
+        run: bash native/linux/build.sh
+
+      - name: Smoke — full examples/ sweep
+        timeout-minutes: 15
+        run: |
+          bash docker/linux/run-examples.sh | tee smoke.log
+          FAIL_LINE="$(grep '^FAIL (' smoke.log || true)"
+          echo "$FAIL_LINE"
+          # run-examples.sh always exits 0 (it collects PASS/FAIL and prints
+          # a summary) -- fail the job explicitly unless the FAIL line is
+          # exactly the one known permanent mac-only skip (or empty).
+          case "$FAIL_LINE" in
+            "FAIL (0): "|"FAIL (1): color-scheme-live-test.ts") ;;
+            *)
+              echo "::error::unexpected example failure(s): $FAIL_LINE"
+              exit 1
+              ;;
+          esac
+
+      - name: Package fixture app (flat) + verify packaged run
+        timeout-minutes: 8
+        run: |
+          Xvfb :99 -screen 0 1024x768x24 >/tmp/xvfb-pack.log 2>&1 &
+          sleep 1
+          export DISPLAY=:99
+          bash packaging/linux/package.sh \
+            -a packaging/mac/fixture-app -n BuniumFixture -o dist-app \
+            -b "$(command -v bun)" --verify 2>&1 | tee pack.log
+
+      - name: Upload logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-smoke-logs
+          path: |
+            smoke.log
+            pack.log
+            /tmp/example-*.log
+          retention-days: 7

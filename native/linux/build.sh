@@ -85,12 +85,19 @@ DBUS_CFLAGS=($(pkg-config --cflags dbus-1))
 DBUS_LIBS=($(pkg-config --libs dbus-1))
 GTK_CFLAGS=($(pkg-config --cflags gtk+-3.0))
 GTK_LIBS=($(pkg-config --libs gtk+-3.0))
+# dbusmenu-glib-0.4 (Phase 6: tray.setMenu() via the AppIndicator/dbusmenu
+# convention, see bunium_system_menu_linux.cc). Transitively pulls in
+# glib-2.0/gobject-2.0/gio-2.0 via its own pkg-config Requires, no need to
+# list those explicitly -- gtk+-3.0's own flags above already cover them
+# too, this is just the dbusmenu-glib-specific include/lib on top.
+DBUSMENU_CFLAGS=($(pkg-config --cflags dbusmenu-glib-0.4))
+DBUSMENU_LIBS=($(pkg-config --libs dbusmenu-glib-0.4))
 
 # bunium_system_dialogs_linux.cc needs RTTI-free-but-exceptions-off GTK
 # lambdas-as-callbacks (+[](...){...} decays a captureless lambda to a raw
 # function pointer, no RTTI/exceptions needed) -- compiles clean under the
 # same CXXFLAGS as everything else, no per-file flag override required.
-"$CXX" "${CXXFLAGS[@]}" "${DBUS_CFLAGS[@]}" "${GTK_CFLAGS[@]}" \
+"$CXX" "${CXXFLAGS[@]}" "${DBUS_CFLAGS[@]}" "${GTK_CFLAGS[@]}" "${DBUSMENU_CFLAGS[@]}" \
   -I"$CEF_ROOT" -I"$BSDIFF_DIR" \
   -shared -fPIC -o "$OUT_DIR/bunium_shim.so" \
   "$MAC_SRC/bunium_shim.cpp" "$SCRIPT_DIR/bunium_window_linux.cc" \
@@ -98,11 +105,11 @@ GTK_LIBS=($(pkg-config --libs gtk+-3.0))
   "$SCRIPT_DIR/bunium_system_notify_linux.cc" \
   "$SCRIPT_DIR/bunium_system_dialogs_linux.cc" \
   "$SCRIPT_DIR/bunium_system_tray_linux.cc" \
-  "$SCRIPT_DIR/bunium_system_linux_stub.cc" \
+  "$SCRIPT_DIR/bunium_system_menu_linux.cc" \
   "$OUT_DIR/bunium_bsdiff_wrap.o" \
   "$OUT_DIR/bsdiff.o" "$OUT_DIR/bspatch.o" \
   "$WRAPPER" -L"$CEF_RELEASE" -lcef -lX11 -lXext -lpthread \
-  "${DBUS_LIBS[@]}" "${GTK_LIBS[@]}" \
+  "${DBUS_LIBS[@]}" "${GTK_LIBS[@]}" "${DBUSMENU_LIBS[@]}" \
   -Wl,-rpath,'$ORIGIN'
 
 "$CXX" "${CXXFLAGS[@]}" \
@@ -116,7 +123,20 @@ GTK_LIBS=($(pkg-config --libs gtk+-3.0))
 # rpath above; copy libcef.so next to the built artifacts so dev-tree runs
 # (no BUNIUM_FRAMEWORK_DIR override) resolve it without extra env setup,
 # matching the ANGLE-libs-next-to-executable step in the mac build.
+#
+# The official CEF linux64/linuxarm64 minimal distro ships libcef.so
+# UNSTRIPPED (confirmed via `file`: "with debug_info, not stripped") --
+# unlike the macOS arm64 framework dylib, which the upstream build already
+# strips. Measured: 1.4G unstripped vs ~268M after `strip --strip-unneeded`
+# (matches the mac framework's ~213M ballpark once locale/resource overhead
+# is accounted for) -- a >1GB dead weight in every dev build, packaged app,
+# and platform-package artifact for a plain dlopen'd shared library that
+# nothing needs debug/local symbols from. `--strip-unneeded` (not a bare
+# `strip`, which can remove dynamic-symbol-table entries some binutils
+# versions require) keeps .dynsym (dlopen/dlsym-visible exports) while
+# dropping .debug_*/.symtab/local symbols.
 cp "$CEF_RELEASE/libcef.so" "$OUT_DIR/"
+strip --strip-unneeded "$OUT_DIR/libcef.so"
 
 # Chromium's ICU/V8 init (base::i18n::InitializeICU, gin/v8_initializer)
 # looks for icudtl.dat and v8_context_snapshot.bin next to the running

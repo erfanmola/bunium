@@ -62,6 +62,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# Phase 10 CEF resource trim, shared with any future release pipeline
+# (mirrors packaging/mac/package.sh's own `source .../cef-trim.sh`).
+source "$SCRIPT_DIR/cef-trim.sh"
 
 NAME=""
 VERSION="1.0.0"
@@ -71,6 +74,9 @@ BUNIUM_REPO="$REPO_ROOT"
 BUN_BIN="$(command -v bun || true)"
 LOCALES="all" # comma list (e.g. "en") trims locales/ to a keeplist
 VERIFY=0
+# Phase 10 CEF resource trim (SwiftShader software-Vulkan stack -- see
+# cef-trim.sh). Default on, matching mac/win's own default-on posture.
+TRIM_CEF=1
 
 usage() {
   sed -n '2,40p' "$0" | grep -E '^#|^$' | sed 's/^# //; s/^#$//'
@@ -87,6 +93,7 @@ while [ "$#" -gt 0 ]; do
     -v) VERSION="$2"; shift 2 ;;
     --locales) LOCALES="$2"; shift 2 ;;
     --verify) VERIFY=1; shift ;;
+    --no-trim) TRIM_CEF=0; shift ;;
     *) echo "unknown option: $1" >&2; usage ;;
   esac
 done
@@ -135,6 +142,14 @@ cp "$BUILD_DIR/icudtl.dat" "$PACKAGE/Runtime/"
 cp "$BUILD_DIR/v8_context_snapshot.bin" "$PACKAGE/Runtime/"
 cp "$BUILD_DIR/"*.pak "$PACKAGE/Runtime/"
 cp -R "$CEF_RESOURCES/locales" "$PACKAGE/Runtime/"
+# Phase 10 trim (default on, --no-trim override). Note native/linux/
+# build.sh own dev output (BUILD_DIR) never copies the SwiftShader stack
+# into native/build-linux/ in the first place (only libcef.so, icudtl.dat,
+# the V8 snapshot and the paks/locales -- see that script), so this only
+# matters for anything that DOES land it under Runtime/ later.
+if [ "$TRIM_CEF" -eq 1 ]; then
+  trim_cef_runtime "$PACKAGE/Runtime"
+fi
 
 # --- Optional locale trim (Chromium falls back to en-US strings when a
 # requested locale's pak is absent -- a trimmed app still runs, just with

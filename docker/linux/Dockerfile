@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libdrm2 libgbm1 libasound2t64 libpango-1.0-0 libcairo2 libgtk-3-0t64 \
     xvfb x11-utils imagemagick gdb \
     dbus dbus-x11 libdbus-1-dev libglib2.0-dev libgtk-3-dev \
+    libdbusmenu-glib-dev libdbusmenu-gtk3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Bun (official installer), on PATH for all shells.

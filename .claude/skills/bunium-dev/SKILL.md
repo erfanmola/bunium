@@ -142,8 +142,10 @@ cross-platform packaging/signing/updates, native OS color-scheme sync, a typed I
   (real Xlib window + sublayers, XPutImage software blit, X11 Shape extension for sublayer
   clipping, real DPI scaling + EWMH resize-edge/drag, see below), `bunium_system_events_linux.cc` (shared system-event inbox),
   `bunium_system_notify_linux.cc` (real D-Bus notifications), `bunium_system_dialogs_linux.cc`
-  (real GTK dialogs), `bunium_system_tray_linux.cc` (real D-Bus StatusNotifierItem tray), and
-  `bunium_system_linux_stub.cc` (menu only -- deliberately deferred, see below).
+  (real GTK dialogs), `bunium_system_tray_linux.cc` (real D-Bus StatusNotifierItem tray +
+  hand-rolled dbusmenu wire protocol for `tray.setMenu()`), and
+  `bunium_system_menu_linux.cc` (in-memory `DbusmenuMenuitem` tree construction --
+  `Menu.setApplicationMenu()` stays an honest no-op, see below).
 - **Chrome-runtime pak/locale files resolve relative to libcef.so's own directory
   (`base::PathService::Get(base::DIR_MODULE)`/dladdr), NOT via `CefSettings.resources_dir_path`
   -- a real startup-crashing bug, root-caused via gdb+strace.** Every window-creating example
@@ -171,7 +173,7 @@ cross-platform packaging/signing/updates, native OS color-scheme sync, a typed I
   binary file` + a GPU-process-crash loop until `bun run build:native:mac` was rerun. Keep
   Linux's output dir separate; any future platform port sharing this bind-mounted checkout
   needs the same treatment.
-- **Phase 5 system surface: notify/dialogs/tray are real, menu is deliberately deferred.**
+- **Phase 5 system surface: notify/dialogs/tray/menu are all real now.**
   Notifications = real org.freedesktop.Notifications D-Bus client, non-blocking `Notify()` +
   background dispatch thread + `ActionInvoked` click round-trip. Dialogs = real
   `GtkFileChooserDialog`/`GtkMessageDialog`, response-signal driven. Tray = real
@@ -187,15 +189,31 @@ cross-platform packaging/signing/updates, native OS color-scheme sync, a typed I
   Tray's `dbus_bus_request_name()`/`dbus_bus_release_name()` are `*_and_block`-style calls that
   deadlocked every time against the background D-Bus dispatch thread also reading the same
   connection -- fixed by sending `RequestName`/`ReleaseName` as plain non-blocking messages
-  instead. **Menu is genuinely deferred, not an oversight**: `bunium_window_linux.cc` is raw
-  Xlib with no GTK/Qt toolkit window to attach a menu bar to, and there's no single
-  cross-desktop "global menu" convention (GNOME's `com.canonical.AppMenu` D-Bus protocol is
-  GNOME-specific; most other DEs want an in-window menu bar instead) -- real design work, not a
-  quick vertical slice like the other three. All three real ones verified end-to-end (not just
-  no-crash) via throwaway fake D-Bus services: `docker/linux/fake_notify_daemon.c` and
+  instead.
+  **Menu (`tray.setMenu()`) is now real too, via a tray-attached `com.canonical.dbusmenu`
+  wire-protocol implementation** (the "AppIndicator" convention every SNI-consuming panel
+  already knows to render off a tray's `Menu` D-Bus property) -- NOT an in-window GtkMenuBar,
+  since `bunium_window_linux.cc` is raw Xlib with no GTK/Qt toplevel to attach one to, and there
+  is still no cross-desktop "global application menu" convention (`Menu.setApplicationMenu()`
+  stays an honest no-op for that reason). **A third real bug found and fixed here:**
+  `libdbusmenu-glib`'s `DbusmenuServer` (the library's own D-Bus-publishing helper) opens its OWN
+  private GDBus connection with its own unique bus name -- completely incompatible with serving
+  a menu object under the tray's existing SNI bus name/connection. Confirmed empirically via real
+  `gdbus introspect`/`GetLayout` calls: resolving the tray's `Menu` path against the tray's own
+  SNI bus name got "not a valid bus name" / an empty introspection result, since the two objects
+  lived on two different connections. Fixed by hand-rolling the dbusmenu wire protocol
+  (`GetLayout`/`Event`/`AboutToShow`/`Properties`/`Introspectable`) directly on the tray's own
+  raw-libdbus `DBusConnection` (`HandleMenuObjectMessage` in `bunium_system_tray_linux.cc`),
+  using `libdbusmenu-glib`'s `DbusmenuMenuitem` purely as an in-memory tree data structure
+  (`bunium_system_menu_linux.cc`), never as its own D-Bus publisher. **Any future D-Bus-adjacent
+  libdbusmenu/AppIndicator work should check this first** -- `DbusmenuServer` looks like the
+  obvious API but is a dead end for this "attach to an existing connection/bus name"
+  architecture. All four (notify/dialogs/tray/menu) verified end-to-end (not just no-crash) via
+  throwaway fake D-Bus services and real `gdbus` calls: `docker/linux/fake_notify_daemon.c` and
   `docker/linux/fake_sni_watcher.c` (both dev/test-only, not shipped/built by
   `native/linux/build.sh`) -- proved Notify/ActionInvoked and RegisterStatusNotifierItem/
-  Properties.GetAll/Activate all round-trip correctly.
+  Properties.GetAll/Activate all round-trip correctly; `native/linux/test-tray-menu.ts` proves
+  the dbusmenu `GetLayout`/`Event` round-trip against the tray's real bus name.
 - **35/37 examples PASS** (2026-08-22, linuxarm64, bun 1.4.0) -- every window/IPC/webview/
   system/update example green. Two non-bugs: `color-scheme-live-test.ts` is inherently
   mac-only (`defaults`/`osascript`), stays off the run matrix same as it already does for

@@ -1004,9 +1004,10 @@ deferred.**
   fire-and-forget pattern `RegisterStatusNotifierItem` already used. v1 scope: `IconName` only
   (`setSymbol` -- a real freedesktop icon-theme name, won't resolve for the SF-Symbol-style names
   cross-platform example code passes, same "platform interprets its own idiom" precedent Windows
-  already established); `setIcon` (arbitrary image file) is a documented no-op -- real support
-  needs `GdkPixbuf`-decoding into the SNI `IconPixmap` variant, not attempted this pass.
-  `setMenu` is a no-op since native menu is still stub-only (below).
+  already established). `setMenu` is a no-op since native menu is still stub-only (below).
+  **Update (2026-08-25): `setIcon` (arbitrary image file) is now real, no longer a no-op.**
+  See the dated entry below ("Tray `setIcon` implemented via GdkPixbuf") for the full writeup;
+  this earlier note is left in place only to record that it *was* originally deferred and why.
 - **Menu is deliberately deferred, not just unimplemented-by-oversight.** Linux has no
   NSMenu/HMENU equivalent bunium can attach without real design work: `bunium_window_linux.cc`
   is a raw Xlib window (no GTK/Qt toolkit window at all), and there is no single cross-desktop
@@ -1162,10 +1163,9 @@ gaps:
 **Known v1 scope gaps (deliberate, matches the "repeat Phase 0-1, not full parity" plan note):**
 - X11 only, no Wayland (Xwayland compat verified via the real-desktop testing above, but no
   Wayland-native backend exists or is planned for v1).
-- Native menu bar is stub-only, deferred pending real design work (see above).
-- Tray `setIcon` (arbitrary image file) is a documented no-op; only `setSymbol` (icon-theme
-  name) works. Tray click itself IS verified end-to-end against a real desktop panel (see
-  above) -- `setIcon` and `setMenu` remain no-ops, not the click path.
+- X11 only, no in-window GtkMenuBar/Qt menu bar and no `Menu.setApplicationMenu()` -- see the
+  dated entry below ("Linux menu bar shipped via tray-attached dbusmenu") for why this stays an
+  honest no-op even after `setMenu` became real.
 
 **Packaging (Phase 8 equivalent) — done (2026-08-23):** `packaging/linux/package.sh` produces
 a flat `Name/{Name (shell launcher), bun, Runtime/, app/}` directory, modeled on
@@ -1209,6 +1209,190 @@ Confirmed `PLATFORM-PACKAGE-SMOKE PASS` on the real host. `bunium-linux-<arch>` 
 added to root `package.json`'s `optionalDependencies` (deferred until an actual publish/release
 decision is made -- the staging+verify scripts already prove the mechanism works without
 touching the real consumer-facing dependency list).
+
+**Tray `setIcon` implemented via GdkPixbuf (2026-08-25, Arch Linux x64):** previously
+`bunium_system_tray_set_icon` in `native/linux/bunium_system_tray_linux.cc` just printed a
+warning and did nothing -- only `setSymbol` (a freedesktop icon-theme name written to the SNI
+`IconName` property) had a real effect. Implemented actual arbitrary-image-file support:
+decodes the file via `gdk-pixbuf-2.0` (already transitively linked through the existing
+`gtk+-3.0` pkg-config dependency -- no new build flags needed), converts it into the SNI spec's
+`a(iiay)` `IconPixmap` D-Bus property (big-endian ARGB32, row-major, per-pixel repacking from
+GdkPixbuf's R/G/B/A byte order), and wires the decoded pixmap into all three places a client can
+observe it: the single-property `org.freedesktop.DBus.Properties.Get` path, the `GetAll` path,
+and the introspection XML (`<property name="IconPixmap" type="a(iiay)" access="read"/>`).
+`bunium_system_tray_set_icon` now stores the decoded pixmap in `TrayState` and emits a `NewIcon`
+D-Bus signal (fire-and-forget, matching the file's existing non-blocking dispatch-thread-safe
+pattern established by the `RequestName` deadlock fix above) so a live desktop panel refreshes
+immediately. `is_template` remains ignored (a macOS-only concept -- Linux tray icons have no
+light/dark-adaptive template-image convention). **Verified with a real byte-level D-Bus
+fixture, not just no-crash:** `native/linux/test-tray-set-icon.ts` generates a tiny deterministic
+2x3 PNG via ImageMagick's `convert`, calls `setIcon()`, then independently reads back the
+`IconPixmap` property via a real `gdbus call ... org.freedesktop.DBus.Properties.Get` against
+bunium's own registered SNI object -- parses the actual returned byte array and asserts exact
+pixel values round-trip correctly (confirmed `TRAY-SET-ICON PASS` with correct ARGB bytes
+`[255,255,0,0]` red and `[255,0,255,0]` green at the expected offsets). Full `examples/` sweep
+re-run after this change: 36/36 real PASS, no regressions.
+
+**Linux distribution packaging: `.deb`/`.rpm`/AppImage implemented (2026-08-25, Arch Linux
+x64).** The previously-flat-only `packaging/linux/package.sh` output is now wrapped by three
+new sibling scripts, each consuming the flat `Name/` directory package.sh already produces
+rather than re-deriving it (single source of truth for the launcher/env-var contract):
+- `packaging/linux/package-deb.sh` -- installs the flat package verbatim under `/opt/<name>/`
+  (the conventional FHS location for a vendored-runtime app that doesn't split into individual
+  system libs), symlinks `/usr/bin/<name>`, and drops a `.desktop` entry under
+  `/usr/share/applications/`. Built via `fakeroot dpkg-deb --build --root-owner-group`
+  (fakeroot's LD_PRELOAD getuid/chown shims fabricate root:root payload ownership, which a
+  `.deb`'s `data.tar` requires, without needing the build machine to actually run as root).
+  Package name/version derived from the flat package dir name (lowercased) and the app's
+  `package.json` `version` field.
+- `packaging/linux/package-rpm.sh` -- same `/opt/<name>/` layout, built via `rpmbuild -bb`
+  against a generated `.spec` whose `%install` scriptlet `cp -a`'s the flat package dir
+  directly (passed in as an absolute path via `--define _srcpkgpath`, since a relative path
+  would resolve wrong from rpmbuild's own deep `_topdir/BUILD` cwd -- a real bug hit and fixed
+  during verification). Uses an isolated `--dbpath` under the build's own `_topdir` rather than
+  the host's real `/var/lib/rpm` -- the real DB is root-owned on most distros and rpmbuild
+  otherwise fails with "cannot open Packages database" as a non-root user (also hit and fixed
+  during verification).
+- `packaging/linux/package-appimage.sh` -- the distribution-agnostic option (not tied to any one
+  packaging ecosystem, closest Linux analog to macOS' double-clickable `.app` UX). Stages an
+  `AppDir` (`AppRun` execing the flat package's own launcher unmodified, a `.desktop` file, and a
+  placeholder icon synthesized via ImageMagick `convert -size 256x256 xc:"#4a90d9"` since no real
+  app-icon asset exists in this repo yet) and builds via `appimagetool`. `appimagetool` is not
+  vendored by this repo (no distro-neutral static one-liner install exists) -- downloaded
+  directly from `https://github.com/AppImage/AppImageKit/releases/download/continuous/
+  appimagetool-x86_64.AppImage` to `~/.local/bin/appimagetool` + `chmod +x`, deliberately
+  avoiding the AUR (`yay -S appimagetool-bin` was tried first and abandoned -- it hung waiting on
+  an interactively-supplied sudo password that the automation had no way to provide; the direct
+  GitHub-releases binary needs no root at all).
+
+All three verified end-to-end on the real host, each via its own `--verify` flag, reusing the
+shared `packaging/mac/fixture-app` (the same green-page pixel-verified fixture every other
+packaging script in this repo reuses) under a real `Xvfb :99`:
+- `.deb`: built (133M for `--locales` default/all), extracted via `dpkg-deb -x` (no real
+  install/root needed for verification), launcher run from the extracted tree --
+  `PACKAGED_APP_VERIFY:PASS`.
+- `.rpm`: built (146M), extracted via `rpm2cpio | cpio` (both present on this host; `bsdtar` kept
+  as a fallback in the script for hosts lacking `rpm2cpio`), launcher run --
+  `PACKAGED_APP_VERIFY:PASS`.
+- AppImage: built (178M), run two ways -- `--appimage-extract-and-run` (works without
+  `/dev/fuse`, the path used by the script's own `--verify`, matters for CI/sandboxed
+  environments that often lack FUSE) AND a direct invocation exercising the real FUSE-mount code
+  path (`/dev/fuse` present on this host) -- both `PACKAGED_APP_VERIFY:PASS`.
+
+New `bun run` scripts added to root `package.json`: `pack:linux:deb`, `pack:linux:rpm`,
+`pack:linux:appimage` (alongside the existing `pack:linux`). `docs/guide/packaging.md` updated
+with a full Linux section matching the existing mac/Windows sections' structure and detail
+level. This closes the "True `.deb`/AppImage/rpm distribution packaging is an explicitly
+deferred v2 follow-up" gap noted in the Packaging entry above -- that note is now historical
+(kept for context on why the flat-directory form shipped first).
+
+Not done: no icon asset ships in this repo yet, so `.deb`/`.rpm`'s `.desktop` `Icon=` fields
+reference a name with no backing file (cosmetic -- falls back to a generic icon in most desktop
+environments) and the AppImage's icon is a synthesized solid-color placeholder, not real branding
+-- both scripts are structured to accept a real icon later (e.g. a future `-c <icon.png>` flag,
+mirroring `packaging/mac/package.sh`'s `-c <icon.icns>`) without further changes. Also not done:
+no CI job for any of the four Linux packaging forms yet (no `linux-smoke.yml` analogous to
+`win-smoke.yml`) -- verification so far is local-only, on this one Arch x64 host.
+
+**x64 bare-metal re-validation + a real bug found and fixed (2026-08-25, Arch Linux x64, no
+Docker/VM, bun 1.4.0):** first from-scratch bring-up of this port on a fresh x64 host (all
+prior Linux work was arm64 -- Docker on Apple Silicon or bare-metal Debian arm64). Installed
+bun + `xorg-server-xvfb` via `pacman` (every other native dep from the Dockerfile's apt list was
+already present), fetched `vendor/cef-linux64` via `docker/linux/fetch-cef.sh` (arch dispatch
+worked unmodified), built via `native/linux/build.sh`. Full `examples/` sweep: 35/37 immediate
+PASS, same two expected non-bugs as arm64 (`color-scheme-live-test.ts` mac-only,
+`vite-dev-test.ts` cold-`bunx`-cache) -- 36/37 true pass rate once `bunx` had a warm cache,
+matching the arm64 baseline exactly. No new example-level bugs; the port itself is arch-agnostic
+as designed.
+
+- **Real bug found: the vendored CEF linux64 (and presumably linuxarm64) minimal distro ships
+  `libcef.so` UNSTRIPPED.** `file vendor/cef-linux64/Release/libcef.so` reports "with debug_info,
+  not stripped" -- 1.4G on disk, vs. the macOS arm64 framework dylib's already-stripped ~213M
+  (Phase 10's own audit). This had gone unnoticed through all prior arm64 Linux work because
+  Phase 10's bundle-size pass was scoped to macOS only and never re-run for Linux. Impact was
+  large and silent: every dev build (`native/build-linux/`), every packaged app
+  (`packaging/linux/package.sh`), and every staged platform-package artifact
+  (`scripts/stage-release-artifacts-linux.sh`) was carrying an extra ~1.1GB of DWARF debug info
+  for a plain `dlopen`'d shared library nothing debugs at runtime. Fixed in
+  `native/linux/build.sh`: `strip --strip-unneeded` on the copied `libcef.so` (not a bare
+  `strip`, which can drop `.dynsym` entries some binutils versions still need for a shared
+  object) -- `.dynsym`/dlopen-visible exports kept, `.debug_*`/`.symtab`/local symbols dropped.
+  Result: 1.4G -> 268M (matches the mac framework's ballpark once accounting for the
+  Resources/locales overhead mac's number already includes). Verified no regression: full
+  `examples/` sweep re-run post-strip, 36/36 real PASS (1 expected mac-only skip) -- the shim's
+  own dlopen of `libcef.so` and every CEF entry point it calls still resolve correctly stripped.
+- **Re-staged + re-verified the full Linux release/packaging pipeline post-fix, all real,
+  not just no-crash:** `scripts/stage-release-artifacts-linux.sh` now produces a 294M
+  `bunium-linux-x64` platform package (was 1.4G+ pre-fix);
+  `scripts/verify-platform-package-linux.sh` (installed-consumer simulation, dev tree
+  unreachable) -- `PLATFORM-PACKAGE-SMOKE PASS`. `packaging/linux/package.sh` end-to-end app
+  packaging + `--verify`, both with `--locales all` (419M) and `--locales en` (371M) --
+  `PACKAGED_APP_VERIFY:PASS` both times, real window + pixel-verified paint. This is the first
+  time the Linux packaging/staging pipeline has been run+verified on x64 (previously arm64-only)
+  and the first time its output size was actually measured (no prior session had checked).
+
+**Linux menu bar shipped via tray-attached dbusmenu (2026-08-26, Arch Linux x64):** `tray.
+setMenu()` is now fully real, closing the last Linux tray no-op. Chosen design: serve the
+`com.canonical.dbusmenu` wire protocol (the "AppIndicator" convention every SNI-consuming panel
+-- GNOME Shell's AppIndicator extension, KDE Plasma, XFCE's indicator-application -- already
+knows to fetch and render off a tray's `Menu` D-Bus property), NOT an in-window GtkMenuBar --
+`bunium_window_linux.cc` is a raw Xlib window with no GTK/Qt toplevel to attach a widget menu
+bar to, and (per the deferred-menu research above) there is still no single cross-desktop
+application-level global-menu-bar convention. `Menu.setApplicationMenu()` therefore stays an
+honest no-op; only the tray-attached path is real.
+- **Real bug found and fixed: `libdbusmenu-glib`'s `DbusmenuServer` is unusable for this
+  architecture.** First attempt published the menu object via `dbusmenu_server_new()`/
+  `dbusmenu_server_set_root()`. This is wrong: `DbusmenuServer` opens its OWN private GDBus
+  connection with its own unique bus name, entirely separate from the tray's raw-libdbus
+  `DBusConnection`/well-known SNI bus name (`org.kde.StatusNotifierItem-<pid>-<id>`). Confirmed
+  empirically via real `gdbus introspect`/`GetLayout` calls against a running instance: resolving
+  the tray's advertised `Menu` object path against the tray's own SNI bus name (exactly what a
+  real desktop panel does) got "not a valid bus name" / an empty introspection result, because
+  the SNI object and the dbusmenu object lived on two completely different D-Bus connections.
+  **The fix:** serve the dbusmenu wire protocol by hand, using raw libdbus
+  (`dbus_connection_try_register_object_path` + a hand-rolled `GetLayout`/`Event`/`AboutToShow`/
+  `Properties`/`Introspectable` handler, `HandleMenuObjectMessage` in
+  `bunium_system_tray_linux.cc`), on the SAME `DBusConnection` the tray's own SNI object already
+  uses. `libdbusmenu-glib`'s `DbusmenuMenuitem` (NOT `DbusmenuServer`) is still used, purely as
+  an in-memory GObject tree data structure (property bag + child list) in the new
+  `native/linux/bunium_system_menu_linux.cc` -- it never publishes itself over D-Bus; only
+  `GetLayout`'s hand-rolled serializer (`SerializeMenuItem`) walks it. Menu clicks are delivered
+  via the hand-rolled `Event(id, "clicked", ...)` method (pushes a `bunium-menu-click` system
+  event), not via dbusmenu-glib's own `DBUSMENU_MENUITEM_SIGNAL_ITEM_ACTIVATED` signal (which
+  would require the rejected `DbusmenuServer` to fire in the first place).
+- **Verified end-to-end, not just no-crash**, via a new fixture `native/linux/test-tray-menu.ts`
+  using real `gdbus call`/`ListNames` (not a fake stub): finds the tray's own registered SNI bus
+  name, confirms `Menu`/`ItemIsMenu` properties resolve to a real object path, calls
+  `GetLayout(0, -1, @as [])` on that path **using the same bus name as the SNI object itself**
+  (the exact check that would have caught the `DbusmenuServer` bug immediately -- it now
+  succeeds, since both objects share one connection), confirms the returned layout contains every
+  item/submenu/nested-item/separator built via `Menu`, then calls `Event(101, "clicked", ...)`
+  and confirms `Menu.onItemClicked` fires in JS with the correct id. `TRAY-MENU PASS`.
+- Full `examples/` sweep re-run post-change: 36/37 (same one permanent mac-only skip,
+  `color-scheme-live-test.ts`) -- no regressions. `test-tray-click.ts`/`test-tray-set-icon.ts`
+  (pre-existing tray fixtures) re-verified passing too, confirming the `bunium_system_tray_
+  linux.cc` rewrite didn't regress click/icon delivery.
+- `native/linux/bunium_system_linux_stub.cc` (the old honest-no-op menu stub) is deleted,
+  replaced by the real `bunium_system_menu_linux.cc` above. `native/linux/build.sh` gained
+  `dbusmenu-glib-0.4` pkg-config flags; `docker/linux/Dockerfile` and `.github/workflows/
+  linux-smoke.yml` both install `libdbusmenu-glib-dev`/`libdbusmenu-gtk3-dev`.
+
+**Windows `TaskDialogIndirect` packaged-app manual check: closed out by the user directly, not
+a project blocker.** The "verify in a packaged app" follow-up noted under Phase 7 below is the
+user's own manual-check item (they have a real Windows desktop to click through it on) --
+not re-attempted here.
+
+**Linux CI added (2026-08-26): `.github/workflows/linux-smoke.yml`,** mirroring `win-smoke.
+yml`'s structure -- `ubuntu-latest`, installs the same apt package list as `docker/linux/
+Dockerfile` (now including `libdbusmenu-glib-dev`), fetches CEF via `docker/linux/fetch-cef.sh`,
+builds via `native/linux/build.sh`, runs the full `docker/linux/run-examples.sh` sweep under
+Xvfb (fails the job on anything beyond the one known `color-scheme-live-test.ts` mac-only skip),
+then packages+verifies the flat-directory form via `packaging/linux/package.sh --verify`.
+Triggers on `workflow_dispatch` + `main` pushes + PRs touching `native/**`/`src/**`/`package.
+json`/`bun.lock`/`packaging/**`/the workflow file itself, matching `win-smoke.yml`'s own trigger
+paths. AppImage packaging is deliberately NOT exercised in CI (would require vendoring
+`appimagetool` into the runner image -- kept local-only, same posture as the mac side not
+running notarization in CI).
 
 ## Phase 7 — Windows port
 
@@ -1587,6 +1771,37 @@ recoverable failure leaving the install untouched). Both PASS.
       Paint path healthy after Phases 8/9 native/relaunch work; no regression.
 
 Phase 10 complete for macOS.
+
+**Phase 10 extended to Linux + Windows (2026-08-26, Arch Linux x64):**
+
+- [x] **Linux `packaging/linux/cef-trim.sh` (new file, default ON in `packaging/linux/
+      package.sh`, `--no-trim` to opt out) removes the same SwiftShader software-Vulkan
+      stack mac already trims** -- confirmed present in the vendored `vendor/cef-linux64/
+      Release/` distro (`libvk_swiftshader.so` 14.2M, `libvulkan.so.1` 1.4M,
+      `vk_swiftshader_icd.json` 107B), same three-file trio as mac's `.dylib`/`.json` set,
+      `.so` extension instead. Checked for a Linux equivalent of mac's regenerable
+      `gpu_shader_cache.bin`: none exists in this distro layout (nothing under `Release/`
+      or `Resources/` named similarly), so there is nothing else to remove on that front.
+      Verified via a full `packaging/linux/package.sh --verify` run against the shared
+      `packaging/mac/fixture-app` under Xvfb post-trim: `PACKAGED_APP_VERIFY:PASS`. Note:
+      `native/linux/build.sh`'s own dev-tree output (`native/build-linux/`) never copies
+      the SwiftShader stack there in the first place (only `libcef.so`/`icudtl.dat`/the V8
+      snapshot/paks/locales), so this trim is a real no-op against today's dev/packaged
+      builds and mainly exists so a future build.sh change that DOES copy those files stays
+      trimmed automatically, and so the flag surface (`--no-trim`) matches mac/Windows for
+      consistency.
+- [x] **Windows `packaging/win/cef-trim.sh` (new file, default ON in `packaging/win/
+      package.sh`, `--no-trim` to opt out), implemented by inference from the mac/Linux
+      SwiftShader trio's standard CEF distro naming** (`vk_swiftshader.dll`,
+      `vulkan-1.dll`, `vk_swiftshader_icd.json`) -- **NOT verified against a real vendored
+      Windows CEF distro**, since this dev box (Arch Linux x64) has no `vendor/
+      cef-windows-x64/` to check filenames against (Windows packaging only ever runs on a
+      real Windows host, per `packaging/win/package.sh`'s own header). `rm -f` on each
+      candidate filename fails safe if a name is wrong (no-op, not an error), so this
+      cannot break an existing packaging run even if unverified. Flagged in this file's own
+      header comment as implemented-but-unverified-on-real-Windows; the user verifies
+      Windows-side things manually per their own stated workflow -- this is a documented
+      caveat, not a blocker.
 
 ## Phase 11 — Public package + docs
 

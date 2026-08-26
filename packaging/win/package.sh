@@ -54,7 +54,7 @@
 # Usage:
 #   packaging/win/package.sh -a <app-dir> [-n Name] [-i com.example.name]
 #     [-o out-dir] [-r bunium-repo] [-b /path/to/bun.exe] [-v 1.0.0]
-#     [--locales en[,de,...]] [--verify]
+#     [--locales en[,de,...]] [--verify] [--no-trim]
 #
 # --verify runs the freshly packaged <Name>.exe and requires the app to emit
 # PACKAGED_APP_VERIFY:PASS before exiting (needs a desktop session -- the
@@ -65,6 +65,10 @@ export MSYS2_ARG_CONV_EXCL='*'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -W)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -W)"
+# Phase 10 CEF resource trim, shared with any future release pipeline
+# (mirrors packaging/mac/package.sh's own `source .../cef-trim.sh`). See
+# that file's header for the unverified-on-real-Windows caveat.
+source "$SCRIPT_DIR/cef-trim.sh"
 
 NAME=""
 BUNDLE_ID=""
@@ -75,6 +79,9 @@ BUNIUM_REPO="$REPO_ROOT"
 BUN_BIN="$(command -v bun)"
 LOCALES="all" # comma list (e.g. "en") trims locales/ to a keeplist
 VERIFY=0
+# Phase 10 CEF resource trim (SwiftShader software-Vulkan stack -- see
+# cef-trim.sh). Default on, matching mac's own default-on posture.
+TRIM_CEF=1
 
 usage() {
   sed -n '52,64p' "$0" | grep -E '^#|^$' | sed 's/^# //; s/^#$//'
@@ -92,6 +99,7 @@ while [ "$#" -gt 0 ]; do
     -v) VERSION="$2"; shift 2 ;;
     --locales) LOCALES="$2"; shift 2 ;;
     --verify) VERIFY=1; shift ;;
+    --no-trim) TRIM_CEF=0; shift ;;
     *) echo "unknown option: $1" >&2; usage ;;
   esac
 done
@@ -146,6 +154,12 @@ cp "$CEF_RESOURCES/icudtl.dat" "$PACKAGE/Runtime/"
 cp "$CEF_RESOURCES/"*.pak "$PACKAGE/Runtime/" 2>/dev/null || true
 cp "$BUNIUM_REPO/native/build/bunium_shim.dll" "$PACKAGE/Runtime/"
 cp "$BUNIUM_REPO/native/build/bunium_subprocess.exe" "$PACKAGE/Runtime/"
+
+# --- Phase 10: trim CEF resources (default on, --no-trim override). See
+# cef-trim.sh's header for the unverified-filenames caveat on Windows. ---
+if [ "$TRIM_CEF" -eq 1 ]; then
+  trim_cef_runtime "$PACKAGE/Runtime"
+fi
 
 # --- Resources: the resources_dir_path. Optional locale keeplist trim
 # (Chromium falls back to en-US strings when the requested locale is
