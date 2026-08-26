@@ -21,6 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -W)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -W)"
 CEF_ROOT="$REPO_ROOT/vendor/cef-windows-x64"
 CEF_RELEASE="$CEF_ROOT/Release"
+CEF_RESOURCES="$CEF_ROOT/Resources"
 WRAPPER="$REPO_ROOT/native/build/wrapclang/libcef_dll_wrapper.lib"
 OUT_DIR="$REPO_ROOT/native/build"
 BSDIFF_DIR="$REPO_ROOT/vendor/bsdiff"
@@ -78,14 +79,18 @@ COMMON_FLAGS=(
   "$OUT_DIR/subprocess_main.obj" \
   "$WRAPPER" "$CEF_RELEASE/libcef.lib" user32.lib
 
-# CEF Windows ships its runtime DLLs + resources flat in Release/ -- the GPU
-# and renderer subprocesses find them via the executable's directory, so
-# mirror them next to our outputs (like the mac ANGLE dylib copy below).
+# CEF Windows ships its runtime DLLs in Release/ and its resources (paks,
+# icudtl.dat, v8_context_snapshot.bin, locales/) in a separate Resources/
+# dir -- both must land next to our outputs, since Chrome-runtime resolves
+# them relative to libcef.dll's own directory (DIR_MODULE), same as Linux.
 cp "$CEF_RELEASE/"*.dll "$OUT_DIR/" 2>/dev/null || true
 cp "$CEF_RELEASE/"*.bin "$OUT_DIR/" 2>/dev/null || true
 cp "$CEF_RELEASE/"*.dat "$OUT_DIR/" 2>/dev/null || true
-cp "$CEF_RELEASE/"*.pak "$OUT_DIR/" 2>/dev/null || true
-cp "$CEF_RELEASE/locales/" "$OUT_DIR/" 2>/dev/null || true
+cp "$CEF_RESOURCES/"*.bin "$OUT_DIR/" 2>/dev/null || true
+cp "$CEF_RESOURCES/"*.dat "$OUT_DIR/" 2>/dev/null || true
+cp "$CEF_RESOURCES/"*.pak "$OUT_DIR/" 2>/dev/null || true
+rm -rf "$OUT_DIR/locales"
+cp -r "$CEF_RESOURCES/locales" "$OUT_DIR/locales" 2>/dev/null || true
 
 echo "built: $OUT_DIR/bunium_shim.dll"
 echo "built: $OUT_DIR/bunium_subprocess.exe"
