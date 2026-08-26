@@ -4,6 +4,9 @@ layout: home
 hero:
   name: bunium
   tagline: Electron-like framework — Bun + CEF + TypeScript
+  image:
+    src: /icon.png
+    alt: bunium
   actions:
     - theme: brand
       text: Getting started
@@ -29,10 +32,11 @@ features:
 
 ## Status
 
-Phases 0–5 and 8–10 are implemented and verified on **macOS (arm64, Apple Silicon)**.
-Phase 3 (Vite dev), Phase 4 (`create-bunium-app`, all 6 framework × language templates),
-and Phase 9 (auto-update) are complete. Phase 6 (Linux) and Phase 7 (Windows) are not
-started; Phase 11 (publishing) is blocked on a native-artifact pipeline — see
+All 11 planned phases are implemented and verified across **macOS, Linux, and
+Windows**: window/paint, typed IPC, `<bunium-webview>`, Vite dev + `bunium://` prod,
+native system features (menu/tray/notifications/dialogs), packaging + codesigning,
+auto-update, CEF resource trim, and per-platform npm packages. npm publish is the
+only remaining step before `v0.0.1` is generally installable — see
 [Publishing](/guide/publishing).
 
 Desktop-interactive behavior (real mouse drags, tray clicks, notification banners) is

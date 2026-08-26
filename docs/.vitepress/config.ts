@@ -9,6 +9,11 @@ export default defineConfig({
   // Docs workflow sets BUNIUM_DOCS_BASE accordingly; unset locally means
   // the default site root is correct (dev server, or a root-domain site).
   base: process.env.BUNIUM_DOCS_BASE ?? "/",
+  head: [
+    ["link", { rel: "icon", type: "image/png", href: "/favicon.png" }],
+    ["meta", { property: "og:image", content: "/cover.png" }],
+    ["meta", { name: "twitter:card", content: "summary_large_image" }],
+  ],
   themeConfig: {
     nav: [
       { text: "Guide", link: "/guide/getting-started" },
@@ -37,8 +42,7 @@ export default defineConfig({
     ],
     // Trim archive is dark-mode friendly; leave the default theme alone.
     footer: {
-      message:
-        "macOS support only — Linux (Phase 6) and Windows (Phase 7) are planned.",
+      message: "macOS, Linux, and Windows all supported.",
     },
   },
 });
