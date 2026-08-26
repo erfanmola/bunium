@@ -26,6 +26,10 @@ env:
    # upgrading; SHA1 is the index.json value for the minimal macosarm64 file.
    CEF_VERSION: "151.3.16+gbe1e15d+chromium-151.0.7922.109"
    CEF_SHA1: "9686f8f6ef1343aa813af2c200db29f8b95abe7f"
+   # Linux CEF pins mirror docker/linux/fetch-cef.sh (x64 leg only -- Linux
+   # CI runners are x64; arm64 stays a local/Docker-only path per Phase 6).
+   # (Linux job below reuses docker/linux/fetch-cef.sh's own pinned
+   # version/sha1 rather than duplicating them here.)
 
 jobs:
    darwin-arm64:
@@ -76,3 +80,106 @@ jobs:
            with:
               files: |
                  dist-release/bunium-darwin-arm64-${{ env.RELEASE_VERSION }}.tar.gz
+
+   linux-x64:
+      runs-on: ubuntu-latest
+      env:
+         BUNIUM_LINUX_ARCH: x64
+      steps:
+         - uses: actions/checkout@v4
+
+         - name: Install build + runtime deps
+           run: |
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends \
+                build-essential clang lld cmake ninja-build pkg-config \
+                curl ca-certificates bzip2 unzip git \
+                libx11-dev libxrandr-dev libxrender-dev libxext-dev libxfixes-dev \
+                libxi-dev libxcursor-dev libxdamage-dev libxcomposite-dev libxtst-dev \
+                libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 \
+                libdrm2 libgbm1 libasound2t64 libpango-1.0-0 libcairo2 libgtk-3-0t64 \
+                dbus dbus-x11 libdbus-1-dev libglib2.0-dev libgtk-3-dev \
+                libdbusmenu-glib-dev libdbusmenu-gtk3-dev
+
+         - uses: oven-sh/setup-bun@v2
+
+         - name: Fetch CEF distro (reproduces vendor/cef-linux64)
+           run: bash docker/linux/fetch-cef.sh
+
+         - run: bun install
+
+         - name: Resolve release version (strip leading v)
+           run: echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+         - name: Build shim + subprocess
+           run: bun run build:native:linux
+
+         - name: Stage platform package
+           run: bun run release:artifacts:linux -- -v "$RELEASE_VERSION"
+
+         - name: Verify installed-consumer path
+           run: scripts/verify-platform-package-linux.sh
+
+         - name: Attach archive to GitHub Release
+           uses: softprops/action-gh-release@v2
+           with:
+              files: |
+                 dist-release/bunium-linux-x64-${{ env.RELEASE_VERSION }}.tar.gz
+
+   win32-x64:
+      runs-on: windows-latest
+      env:
+         CEF_ZIP_URL: ${{ vars.CEF_ZIP_URL }}
+      steps:
+         - uses: actions/checkout@v4
+
+         - name: Install LLVM (clang-cl)
+           shell: bash
+           run: |
+              if command -v clang-cl >/dev/null 2>&1; then
+                echo "clang-cl already present"
+              else
+                choco install llvm -y --no-progress
+                echo "${PROGRAMFILES//\\//}/LLVM/bin" >> "$GITHUB_PATH"
+              fi
+
+         - uses: oven-sh/setup-bun@v2
+
+         - name: Fetch CEF distro (reproduces vendor/cef-windows-x64)
+           shell: bash
+           run: |
+              url="${CEF_ZIP_URL:-https://cef-builds.spotifycdn.com/cef_binary_151.3.18+gbeff58d+chromium-151.0.7922.138_windows64_minimal.tar.bz2}"
+              echo "downloading CEF from $url"
+              curl -L --fail -o cef.tar.bz2 "$url"
+              mkdir -p vendor
+              tar -xf cef.tar.bz2 -C vendor
+              inner=$(ls -d vendor/cef_binary_* | head -1)
+              [ -n "$inner" ] || { echo "::error::unexpected zip layout"; exit 1; }
+              rm -rf vendor/cef-windows-x64
+              mv "$inner" vendor/cef-windows-x64
+
+         - name: bun install
+           shell: bash
+           run: bun install
+
+         - name: Resolve release version (strip leading v)
+           shell: bash
+           run: echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+         - name: Build shim + subprocess
+           shell: bash
+           run: bash native/win/build.sh
+
+         - name: Stage platform package
+           shell: bash
+           run: bash scripts/stage-release-artifacts-win.sh -v "$RELEASE_VERSION"
+
+         - name: Verify installed-consumer path
+           shell: bash
+           run: bash scripts/verify-platform-package-win.sh
+
+         - name: Attach archive to GitHub Release
+           uses: softprops/action-gh-release@v2
+           with:
+              files: |
+                 dist-release/bunium-win32-x64-${{ env.RELEASE_VERSION }}.tar.gz

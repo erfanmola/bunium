@@ -115,7 +115,7 @@ cross-platform packaging/signing/updates, native OS color-scheme sync, a typed I
   `Dockerfile` (only needed for the Docker path) = arm64 Ubuntu 24.04 (matches Docker Desktop's
   native platform on Apple Silicon, avoids QEMU) with the g++/cmake/X11-dev/Chromium-runtime-
   dep/Xvfb toolchain -- same package set needed on a bare host (`build-essential cmake
-  ninja-build pkg-config libx11-dev libxext-dev libdbus-1-dev libgtk-3-dev xvfb`). `fetch-cef.sh`
+ninja-build pkg-config libx11-dev libxext-dev libdbus-1-dev libgtk-3-dev xvfb`). `fetch-cef.sh`
   downloads the pinned CEF linuxarm64/linux64 distro (10MB chunks -- this network path caps a
   single response at 10MB) + builds `libcef_dll_wrapper` via cmake/ninja. `run-examples.sh` runs
   every `examples/*.ts` sequentially under Xvfb (same ProcessSingleton one-at-a-time rule as
@@ -123,10 +123,10 @@ cross-platform packaging/signing/updates, native OS color-scheme sync, a typed I
   Docker: `docker build -t bunium-linux-dev -f docker/linux/Dockerfile .` then
   `docker run --rm -v "$(pwd)":/work -w /work bunium-linux-dev bash docker/linux/fetch-cef.sh`
   then `... bash native/linux/build.sh` then `... -e LD_LIBRARY_PATH=/work/native/build-linux
-  ... bash docker/linux/run-examples.sh`.
+... bash docker/linux/run-examples.sh`.
   Bare host: `bash docker/linux/fetch-cef.sh` then `bash native/linux/build.sh` then
   `Xvfb :99 -screen 0 1024x768x24 & export DISPLAY=:99
-  LD_LIBRARY_PATH=native/build-linux; bash docker/linux/run-examples.sh`. **Gotcha:** `bun`
+LD_LIBRARY_PATH=native/build-linux; bash docker/linux/run-examples.sh`. **Gotcha:** `bun`
   installed via the official installer lands in `~/.bun/bin/`, which is not reliably on `PATH`
   in every shell invocation -- always `export PATH="$HOME/.bun/bin:$PATH"` explicitly rather
   than relying on `~/.bashrc` having been sourced.
@@ -170,7 +170,7 @@ cross-platform packaging/signing/updates, native OS color-scheme sync, a typed I
   wrote into the shared `native/build/` (bind-mounted from this macOS host), and
   `bunium_subprocess` has no platform-suffixed filename -- the Linux ELF binary silently
   clobbered the host's mac one, breaking `bun run examples/*.ts` on mac with `cannot execute
-  binary file` + a GPU-process-crash loop until `bun run build:native:mac` was rerun. Keep
+binary file` + a GPU-process-crash loop until `bun run build:native:mac` was rerun. Keep
   Linux's output dir separate; any future platform port sharing this bind-mounted checkout
   needs the same treatment.
 - **Phase 5 system surface: notify/dialogs/tray/menu are all real now.**
@@ -250,10 +250,10 @@ cross-platform packaging/signing/updates, native OS color-scheme sync, a typed I
   **Testing note worth reusing for future Linux input-path work:** verified end-to-end (not
   just no-crash) via a standalone ad hoc harness, `native/linux/test-resize-moveresize.cc`
   (build/run instructions in its own header, not part of `build.sh`) that uses
-  `XTestFakeButtonEvent`/`XTestFakeMotionEvent` (libXtst) to synthesize a *real* X11 input
+  `XTestFakeButtonEvent`/`XTestFakeMotionEvent` (libXtst) to synthesize a _real_ X11 input
   event through the actual X server, drives it through the real `bunium_window_pump_events`
   loop, and checks for the resulting `_NET_WM_MOVERESIZE` `ClientMessage` on root. Works
-  *without* a WM installed -- `XSendEvent` delivers unconditionally to any client selecting
+  _without_ a WM installed -- `XSendEvent` delivers unconditionally to any client selecting
   `SubstructureNotifyMask` on root, no `SubstructureRedirect` owner needed just to observe the
   message. This is a stronger automated check than mac/win have today for their own
   resize-edge code (both explicitly document that their raw-FFI dispatch test helpers bypass
@@ -385,7 +385,7 @@ src/tar.ts <dir>` prints an archive to stdout; `collectDirectory` walks a tree i
   (~59.9fps effective) with `BUNIUM_CEF_VERBOSE=1`, slightly better than the ~17.4ms
   pre-Phase-8 baseline.
 
-## Phase 11 — npm publish path (resolution + staging verified; license + CI landed 2026-08-18)
+## Phase 11 — npm publish path (resolution + staging verified; license + CI landed 2026-08-18; Linux/Windows platform packages landed 2026-08-26)
 
 - **Artifact resolution is in `src/paths.ts`** (native.ts re-exports it). Per key:
   env override (`BUNIUM_SHIM_PATH`/`BUNIUM_SUBPROCESS_PATH`/`BUNIUM_FRAMEWORK_DIR`,
@@ -419,8 +419,25 @@ src/tar.ts <dir>` prints an archive to stdout; `collectDirectory` walks a tree i
   `https://cef-builds.spotifycdn.com/cef_binary_<version>_macosarm64_minimal.tar.bz2`
   works and serves the pinned sha1. Bump `CEF_VERSION`/`CEF_SHA1` (index.json value)
   together when upgrading `vendor/`.
-- **Still open:** npm publish (needs credentials; `private` must come off, platform
-  package added as `optionalDependency` at publish; tag `v0.0.1` first to exercise
+- **Linux/Windows platform packages landed:** the darwin-only mechanism above is now
+  mirrored for both other ports. `scripts/stage-release-artifacts-linux.sh` (existing)
+  and new `scripts/stage-release-artifacts-win.sh` stage `bunium-linux-x64` /
+  `bunium-win32-x64` the same way; Windows gotcha — `framework/locales/` must sit
+  directly under `framework/` (not `framework/Resources/locales`) to match
+  `bunium_shim.cpp`'s win32 `locales_dir_path` derivation and `paths.ts`'s
+  `platformPackagePaths()` (`resourcesDir === frameworkDir` on win32); no install-name
+  rewrite needed on Windows (DLL search order handles it). New
+  `scripts/verify-platform-package-win.sh` mirrors the mac/Linux verify harness but
+  **copies** into the consumer fixture instead of symlinking (NTFS symlinks need
+  elevated privilege). `package.json` gains `release:artifacts:linux`/`:win` scripts +
+  all three platform packages as pinned `optionalDependencies`.
+  `.github/workflows/release.yml` is now 3 parallel jobs (`darwin-arm64` unchanged,
+  `linux-x64` mirroring `linux-smoke.yml`, `win32-x64` mirroring `win-smoke.yml`), each
+  running its stage + verify script. Caveat: Windows scripts are implemented but
+  unverified on real Windows (same posture as `packaging/win/cef-trim.sh`) — the
+  `win32-x64` CI job is their first real exercise.
+- **Still open:** npm publish (needs credentials; `private` must come off on both
+  `bunium` and `create-bunium-app`; tag `v0.0.1` first to exercise the 3-job
   release.yml). License is MIT (`LICENSE` + `"license"` field, both `package.json`s).
 
 ## Rebuild commands (macOS)

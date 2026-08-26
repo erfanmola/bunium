@@ -26,9 +26,7 @@ const menu = new Menu([
   { type: "separator" },
   {
     label: "Sub",
-    submenu: [
-      { label: "Nested Item", id: 102 },
-    ],
+    submenu: [{ label: "Nested Item", id: 102 }],
   },
 ]);
 menu.onItemClicked((id) => {
@@ -84,7 +82,9 @@ const menuOut = getMenu.stdout.toString();
 console.log("[test] Menu property:", menuOut.trim());
 const menuPathMatch = menuOut.match(/objectpath '([^']+)'/);
 if (!menuPathMatch || menuPathMatch[1] === "/") {
-  throw new Error(`Menu property did not point at a real object path: ${menuOut}`);
+  throw new Error(
+    `Menu property did not point at a real object path: ${menuOut}`,
+  );
 }
 const menuPath = menuPathMatch[1]!;
 
@@ -144,7 +144,9 @@ console.log("[test] layout contains separator type:", hasSeparator);
 // Step 3: simulate a real panel's click delivery -- Event(id, "clicked", ...)
 // on the leaf item's own numeric id (101), exactly what a real
 // StatusNotifierHost/dbusmenu client does on click.
-console.log("[test] calling Event(101, 'clicked') -- simulating a real menu click...");
+console.log(
+  "[test] calling Event(101, 'clicked') -- simulating a real menu click...",
+);
 const event = Bun.spawnSync([
   "gdbus",
   "call",
@@ -167,7 +169,10 @@ console.log(
 
 await new Promise((r) => setTimeout(r, 500));
 
-console.log("[result] onItemClicked handler fired with real click id:", clickedId);
+console.log(
+  "[result] onItemClicked handler fired with real click id:",
+  clickedId,
+);
 
 const passed =
   hasItemOne && hasSub && hasNested && hasSeparator && clickedId === 101;

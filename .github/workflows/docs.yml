@@ -2,7 +2,9 @@ name: Docs
 
 # Builds the VitePress docs and deploys them to GitHub Pages on every
 # push to main. Requires Pages > Source > "GitHub Actions" in the repo
-# settings (or build_type: workflow), otherwise deploy-pages fails.
+# settings (or build_type: workflow) -- unavailable for private repos on
+# free plans, so the deploy steps below are non-fatal until then; the
+# build step (the actual doc-correctness check) still fails the run.
 on:
   push:
     branches: [main]
@@ -31,8 +33,12 @@ jobs:
           # in .vitepress/config.ts; unset in dev, where "/" is correct.
           BUNIUM_DOCS_BASE: /bunium/
       - uses: actions/configure-pages@v5
+        continue-on-error: true
+        id: pages
       - uses: actions/upload-pages-artifact@v3
+        if: steps.pages.outcome == 'success'
         with:
           path: docs/.vitepress/dist
       - name: Deploy
+        if: steps.pages.outcome == 'success'
         uses: actions/deploy-pages@v4

@@ -11,6 +11,7 @@
 // side of the comparison is also computed in Bun, not trusted from JS).
 import { dlopen, FFIType, ptr } from "bun:ffi";
 import { paths } from "../src/paths";
+
 const lib = dlopen(paths.shim, {
   bunium_init: {
     args: [FFIType.cstring, FFIType.cstring, FFIType.cstring, FFIType.cstring],

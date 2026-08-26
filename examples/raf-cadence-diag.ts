@@ -5,6 +5,7 @@
 // console.log, forwarded to our stderr via the new OnConsoleMessage hook.
 import { dlopen, FFIType } from "bun:ffi";
 import { paths } from "../src/paths";
+
 const lib = dlopen(paths.shim, {
   bunium_init: {
     args: [FFIType.cstring, FFIType.cstring, FFIType.cstring, FFIType.cstring],

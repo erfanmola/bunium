@@ -4,6 +4,7 @@
 // background, verified independently via each view's own pixel readback.
 import { dlopen, FFIType, type Pointer, ptr } from "bun:ffi";
 import { paths } from "../src/paths";
+
 const lib = dlopen(paths.shim, {
   bunium_init: {
     args: [FFIType.cstring, FFIType.cstring, FFIType.cstring, FFIType.cstring],

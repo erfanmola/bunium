@@ -15,7 +15,9 @@
     "bun": ">=1.0.0"
   },
   "optionalDependencies": {
-    "bunium-darwin-arm64": "0.0.1"
+    "bunium-darwin-arm64": "0.0.1",
+    "bunium-linux-x64": "0.0.1",
+    "bunium-win32-x64": "0.0.1"
   },
   "scripts": {
     "build:native:mac": "native/mac/build.sh",
@@ -27,6 +29,8 @@
     "pack:linux:rpm": "packaging/linux/package-rpm.sh",
     "pack:linux:appimage": "packaging/linux/package-appimage.sh",
     "release:artifacts": "scripts/stage-release-artifacts.sh",
+    "release:artifacts:linux": "scripts/stage-release-artifacts-linux.sh",
+    "release:artifacts:win": "scripts/stage-release-artifacts-win.sh",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "docs:dev": "bun run --cwd=docs dev",

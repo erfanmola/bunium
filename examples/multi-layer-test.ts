@@ -5,6 +5,7 @@
 // bounds sync exists -- the sublayer's position here is just hardcoded).
 import { dlopen, FFIType } from "bun:ffi";
 import { paths } from "../src/paths";
+
 const lib = dlopen(paths.shim, {
   bunium_init: {
     args: [FFIType.cstring, FFIType.cstring, FFIType.cstring, FFIType.cstring],

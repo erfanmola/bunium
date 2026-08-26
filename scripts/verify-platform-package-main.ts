@@ -23,7 +23,9 @@ const g = shot.data[idx + 1]!;
 const r = shot.data[idx + 2]!;
 console.log("center pixel BGR:", b, g, r);
 const passed = r < 20 && g > 235 && b < 20;
-console.log(passed ? "PLATFORM-PACKAGE-SMOKE PASS" : "PLATFORM-PACKAGE-SMOKE FAIL");
+console.log(
+  passed ? "PLATFORM-PACKAGE-SMOKE PASS" : "PLATFORM-PACKAGE-SMOKE FAIL",
+);
 win.close();
 app.shutdown();
 process.exit(passed ? 0 : 1);

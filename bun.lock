@@ -11,6 +11,8 @@
       },
       "optionalDependencies": {
         "bunium-darwin-arm64": "0.0.1",
+        "bunium-linux-x64": "0.0.1",
+        "bunium-win32-x64": "0.0.1",
       },
     },
   },

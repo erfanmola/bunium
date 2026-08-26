@@ -54,7 +54,7 @@ export function buildRelaunchCommand(
     const shim =
       'powershell -NoProfile -NonInteractive -Command "' +
       "while (Get-Process -Id $1 -ErrorAction SilentlyContinue) " +
-      '{ Start-Sleep -Milliseconds $2 }\"; shift 2; exec "$@"';
+      '{ Start-Sleep -Milliseconds $2 }"; shift 2; exec "$@"';
     return [
       "sh",
       "-c",

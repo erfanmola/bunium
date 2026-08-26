@@ -908,6 +908,7 @@ inbox), `bunium_system_notify_linux.cc` (real org.freedesktop.Notifications D-Bu
 `g++`/`gcc`, not clang -- see the compiler-vendor ABI mismatch note below.
 
 **Two real bugs found and fixed during bring-up:**
+
 - **Cross-compiler C++ ABI mismatch (build-time).** Building `bunium_shim.cpp` with clang++
   against `libcef_dll_wrapper.a` (built by CEF's own cmake, which resolves to `/usr/bin/c++` ->
   g++ on the Ubuntu image) segfaulted immediately inside `CefInitialize` -- confirmed via gdb:
@@ -919,19 +920,19 @@ inbox), `bunium_system_notify_linux.cc` (real org.freedesktop.Notifications D-Bu
   `CefSettings.resources_dir_path` (startup crash).** Every window-creating example hard-crashed
   on launch with a release `CHECK` (SIGTRAP, no stderr message) inside
   `ChromeMainDelegate::PostEarlyInitialization -> LoadLocalState`. Root-caused via gdb backtrace
-  + strace: `chrome_100_percent.pak`/`chrome_200_percent.pak`/`resources.pak`/locale paks were
-  being looked up relative to **libcef.so's own directory** (`native/build-linux/`, where the
-  shim copies it) via `base::PathService::Get(base::DIR_MODULE)`/dladdr -- `resources_dir_path` only
-  governs CEF's own resource-bundle delegate, not Chrome-runtime's separate resource-bundle
-  init. Fixed in `native/linux/build.sh`: copy `*.pak` + `locales/` from
-  `vendor/cef-<platform>/Resources/` next to the built shim, same pattern
-  `native/win/build.sh` already used (and had already solved this exact issue for Windows,
-  just not yet recognized as the same root cause when Linux hit it independently). Also needed,
-  matching the win build script: `icudtl.dat` + `v8_context_snapshot.bin` copied next to the
-  shim for the same DIR_MODULE-relative reason (ICU/V8 init).
+   - strace: `chrome_100_percent.pak`/`chrome_200_percent.pak`/`resources.pak`/locale paks were
+     being looked up relative to **libcef.so's own directory** (`native/build-linux/`, where the
+     shim copies it) via `base::PathService::Get(base::DIR_MODULE)`/dladdr -- `resources_dir_path` only
+     governs CEF's own resource-bundle delegate, not Chrome-runtime's separate resource-bundle
+     init. Fixed in `native/linux/build.sh`: copy `*.pak` + `locales/` from
+     `vendor/cef-<platform>/Resources/` next to the built shim, same pattern
+     `native/win/build.sh` already used (and had already solved this exact issue for Windows,
+     just not yet recognized as the same root cause when Linux hit it independently). Also needed,
+     matching the win build script: `icudtl.dat` + `v8_context_snapshot.bin` copied next to the
+     shim for the same DIR_MODULE-relative reason (ICU/V8 init).
 - **`src/paths.ts` had no Linux branch at all** (only `isWin` vs. a macOS-only else) --
   every dlopen attempted to load `bunium_shim.dylib` on Linux, failing with `ERR_DLOPEN_FAILED:
-  invalid ELF header`. Added `isLinux` + a `native/build-linux/bunium_shim.so` dev-tree branch
+invalid ELF header`. Added `isLinux` + a `native/build-linux/bunium_shim.so` dev-tree branch
   (own output dir, not `native/build/` -- see the build-output-collision bug below) and a Linux
   platform-package branch
   (`bunium-linux-<arch>/shim/bunium_shim.so`) for Phase 11 parity. `frameworkDir`/`resourcesDir`
@@ -956,6 +957,7 @@ inbox), `bunium_system_notify_linux.cc` (real org.freedesktop.Notifications D-Bu
 window/IPC/webview/system-stub/update example passes, including `webview-{clip,clip-hit,
 element,hit,stacking}`, typed IPC both directions, `bsdiff`/`update-journal`/`update-e2e`/
 `relaunch`. Two non-bugs, both environment-limited (same category as Windows' own exclusions):
+
 - `color-scheme-live-test.ts` is inherently mac-only (shells out to `defaults`/`osascript`) --
   stays off the Linux run matrix, same as it already does for Windows.
 - `vite-dev-test.ts` failed once on a stone-cold container (`bunx vite`'s first-ever invocation
@@ -1007,7 +1009,7 @@ deferred.**
   already established). `setMenu` is a no-op since native menu is still stub-only (below).
   **Update (2026-08-25): `setIcon` (arbitrary image file) is now real, no longer a no-op.**
   See the dated entry below ("Tray `setIcon` implemented via GdkPixbuf") for the full writeup;
-  this earlier note is left in place only to record that it *was* originally deferred and why.
+  this earlier note is left in place only to record that it _was_ originally deferred and why.
 - **Menu is deliberately deferred, not just unimplemented-by-oversight.** Linux has no
   NSMenu/HMENU equivalent bunium can attach without real design work: `bunium_window_linux.cc`
   is a raw Xlib window (no GTK/Qt toolkit window at all), and there is no single cross-desktop
@@ -1019,7 +1021,7 @@ deferred.**
   with no universal fallback -- both are real architectural decisions, not a quick vertical
   slice like notify/dialogs/tray were. Tracked as open Phase 6 v2 scope.
 - **Deferral confirmed after deeper D-Bus protocol research (2026-08-23):** option (b) is
-  *more* fragmented than the tray's StatusNotifierItem precedent suggested it might be, not
+  _more_ fragmented than the tray's StatusNotifierItem precedent suggested it might be, not
   less. KDE's own AppMenu mechanism (`_KDE_NET_WM_APPMENU_SERVICE_NAME`/`_OBJECT_PATH` X11
   window properties + the `com.canonical.dbusmenu` D-Bus interface) only activates when the
   optional, non-default `kappmenu` KWin script/applet is enabled by the user -- it is not a
@@ -1042,6 +1044,7 @@ deferred.**
   Full `examples/` sweep still 35/37 (same two environment-limited non-bugs as before).
 
 **Real-hardware follow-on work (2026-08-22, bare-metal Debian 12 arm64):**
+
 - **DPI/HiDPI scaling implemented.** `bunium_window_get_scale` now returns a real detected
   scale instead of hardcoded 1.0: `DetectX11Scale()` in `bunium_window_linux.cc` checks the
   `GDK_SCALE` env var first (GTK convention, int 1-4), else reads the `Xft.dpi`/`Xft.Dpi` X
@@ -1078,6 +1081,7 @@ deferred.**
   **Resolved 2026-08-23, see below: this exposed a real bug.**
 
 **WM-driven resize/drag + alpha compositing, verified against real openbox+picom (2026-08-23):**
+
 - Installed openbox (WM) and picom (compositor) on the bare-metal Debian 12 arm64 host and ran
   Xvfb `:99` with `+extension COMPOSITE +extension RENDER` (needed for picom). This let two
   previously-synthetic-only-verified code paths finally be checked against real WM/compositor
@@ -1088,13 +1092,13 @@ deferred.**
   never sees (and thus never responds to) the `_NET_WM_MOVERESIZE` ClientMessage that
   `SendNetWmMoveResize()` sends -- openbox silently ignored every resize/drag attempt on a
   frameless bunium window. This was undetectable by the prior XTest-only test
-  (`test-resize-moveresize.cc`) because that test only proves the message is *sent*, never that
-  anything *responds*. Fixed in `bunium_window_create` by replacing `override_redirect`
+  (`test-resize-moveresize.cc`) because that test only proves the message is _sent_, never that
+  anything _responds_. Fixed in `bunium_window_create` by replacing `override_redirect`
   toggling with the standard `_MOTIF_WM_HINTS` decoration-hiding mechanism (same one GTK/Qt use
   for client-side decorations: `MotifWmHints{flags=MWM_HINTS_DECORATIONS, decorations=0}` via
   `XChangeProperty`), which keeps the window WM-managed. Added a new real-WM-driven test,
   `native/linux/test-resize-real-wm.cc`, which synthesizes a full border-drag-with-motion
-  sequence and checks *actual window geometry* before/after (400px -> 460px width, confirmed) --
+  sequence and checks _actual window geometry_ before/after (400px -> 460px width, confirmed) --
   the first proof in this project that resize-edge hand-off produces a real on-screen resize
   under a real WM, not just a correctly-sent protocol message.
 - **Alpha compositing implemented for real (previously only alpha-byte-correct-but-never-
@@ -1131,6 +1135,7 @@ headless Xvfb), 2026-08-24:** this host also has a real logged-in GNOME desktop 
 (`gdm3` on tty2, `gnome-shell` PID owning `:0` + `wayland-0`, real D-Bus session bus at
 `/run/user/1000/bus`), which closed several previously-inspection-only or fake-daemon-only
 gaps:
+
 - **Notifications**: `dbus-monitor`'d the real session bus while running
   `examples/system-notifications-test.ts` against `:0` (not the Docker fake-daemon setup) --
   confirmed the real `org.freedesktop.Notifications.Notify` call is received and forwarded to
@@ -1161,6 +1166,7 @@ gaps:
   gaps are now closed.
 
 **Known v1 scope gaps (deliberate, matches the "repeat Phase 0-1, not full parity" plan note):**
+
 - X11 only, no Wayland (Xwayland compat verified via the real-desktop testing above, but no
   Wayland-native backend exists or is planned for v1).
 - X11 only, no in-window GtkMenuBar/Qt menu bar and no `Menu.setApplicationMenu()` -- see the
@@ -1237,6 +1243,7 @@ re-run after this change: 36/36 real PASS, no regressions.
 x64).** The previously-flat-only `packaging/linux/package.sh` output is now wrapped by three
 new sibling scripts, each consuming the flat `Name/` directory package.sh already produces
 rather than re-deriving it (single source of truth for the launcher/env-var contract):
+
 - `packaging/linux/package-deb.sh` -- installs the flat package verbatim under `/opt/<name>/`
   (the conventional FHS location for a vendored-runtime app that doesn't split into individual
   system libs), symlinks `/usr/bin/<name>`, and drops a `.desktop` entry under
@@ -1260,7 +1267,7 @@ rather than re-deriving it (single source of truth for the launcher/env-var cont
   app-icon asset exists in this repo yet) and builds via `appimagetool`. `appimagetool` is not
   vendored by this repo (no distro-neutral static one-liner install exists) -- downloaded
   directly from `https://github.com/AppImage/AppImageKit/releases/download/continuous/
-  appimagetool-x86_64.AppImage` to `~/.local/bin/appimagetool` + `chmod +x`, deliberately
+appimagetool-x86_64.AppImage` to `~/.local/bin/appimagetool` + `chmod +x`, deliberately
   avoiding the AUR (`yay -S appimagetool-bin` was tried first and abandoned -- it hung waiting on
   an interactively-supplied sudo password that the automation had no way to provide; the direct
   GitHub-releases binary needs no root at all).
@@ -1268,6 +1275,7 @@ rather than re-deriving it (single source of truth for the launcher/env-var cont
 All three verified end-to-end on the real host, each via its own `--verify` flag, reusing the
 shared `packaging/mac/fixture-app` (the same green-page pixel-verified fixture every other
 packaging script in this repo reuses) under a real `Xvfb :99`:
+
 - `.deb`: built (133M for `--locales` default/all), extracted via `dpkg-deb -x` (no real
   install/root needed for verification), launcher run from the extracted tree --
   `PACKAGED_APP_VERIFY:PASS`.
@@ -1340,6 +1348,7 @@ knows to fetch and render off a tray's `Menu` D-Bus property), NOT an in-window 
 bar to, and (per the deferred-menu research above) there is still no single cross-desktop
 application-level global-menu-bar convention. `Menu.setApplicationMenu()` therefore stays an
 honest no-op; only the tray-attached path is real.
+
 - **Real bug found and fixed: `libdbusmenu-glib`'s `DbusmenuServer` is unusable for this
   architecture.** First attempt published the menu object via `dbusmenu_server_new()`/
   `dbusmenu_server_set_root()`. This is wrong: `DbusmenuServer` opens its OWN private GDBus
@@ -1371,11 +1380,11 @@ honest no-op; only the tray-attached path is real.
 - Full `examples/` sweep re-run post-change: 36/37 (same one permanent mac-only skip,
   `color-scheme-live-test.ts`) -- no regressions. `test-tray-click.ts`/`test-tray-set-icon.ts`
   (pre-existing tray fixtures) re-verified passing too, confirming the `bunium_system_tray_
-  linux.cc` rewrite didn't regress click/icon delivery.
+linux.cc` rewrite didn't regress click/icon delivery.
 - `native/linux/bunium_system_linux_stub.cc` (the old honest-no-op menu stub) is deleted,
   replaced by the real `bunium_system_menu_linux.cc` above. `native/linux/build.sh` gained
   `dbusmenu-glib-0.4` pkg-config flags; `docker/linux/Dockerfile` and `.github/workflows/
-  linux-smoke.yml` both install `libdbusmenu-glib-dev`/`libdbusmenu-gtk3-dev`.
+linux-smoke.yml` both install `libdbusmenu-glib-dev`/`libdbusmenu-gtk3-dev`.
 
 **Windows `TaskDialogIndirect` packaged-app manual check: closed out by the user directly, not
 a project blocker.** The "verify in a packaged app" follow-up noted under Phase 7 below is the
@@ -1412,33 +1421,34 @@ crash when the wrapper has that define. The clang-cl wrapper in `wrap_direct.sh`
 minidumps → cdb `!analyze`, `/Zi` wrapper build for symbolicated stacks.
 
 ### What works
+
 - Browser + subprocess multi-process (renderer/GPU/network/storage all live).
 - `bun examples/basic-window.ts` (frames + clean close).
 - Full `examples/` sweep (2026-08-21, Windows 11 26100, bun 1.3.11):
-  - Window/lifecycle: `close-event`, `loadurl`, `frameless-*`, `resize-plumbing`,
-    `resizable-constraints`, `transparent-window`, `basic-window`.
-  - Rendering/IPC: `scheme-handler`, `draggable-regions`, `ipc-bounds`,
-    `ipc-latency`, `keyboard`, `mouse-click`, `multi-layer`, `raf-cadence-diag`,
-    `sublayer-hit`, `dpr-and-screenshot`, `color-scheme`, `scroll-timing`.
-  - webview: `webview-{clip,clip-hit,element,hit,stacking}`.
-  - typed IPC both directions, `bsdiff`, `update-journal`, `update-e2e`,
-    `relaunch`, `vite-dev`.
-  - System surface (this session): `system-menu-tray` (submenu fix),
-    `system-notifications` (balloons), `system-tray-icon-click` (symbol
-    ignored on Windows by design). `system-dialogs` is interactive (modal
-    native pickers) — verified manually; the TaskDialog message variant falls
-    back to `MessageBoxW` when comctl32 v6 isn't available (no manifest
-    in the dev host process).
-  - Keyboard fix (real regression): OSR renderer dropped key input until the
-    host claimed focus (`SetFocus` at attach + lazily in dispatch) and DOM
-    `key` derived from `windows_key_code`, so CHAR events with a zero key code
-    now fall back to the character itself (`e.key === 'A'` works again).
-  - `vite-dev`: initial serve + post-edit pickup verified. HMR *push* is
-    best-effort — `bunx vite` under the Bun runtime on Windows drives a
-    rolldown-vite whose watcher stays silent (OS `fs.watch` fires fine),
-    so the test falls back to a plain `loadURL()` reload and warns.
-  - Environment-limited: `color-scheme-live-test.ts` is mac-only
-    (`defaults`/`osascript`) and stays off the Windows run matrix.
+   - Window/lifecycle: `close-event`, `loadurl`, `frameless-*`, `resize-plumbing`,
+     `resizable-constraints`, `transparent-window`, `basic-window`.
+   - Rendering/IPC: `scheme-handler`, `draggable-regions`, `ipc-bounds`,
+     `ipc-latency`, `keyboard`, `mouse-click`, `multi-layer`, `raf-cadence-diag`,
+     `sublayer-hit`, `dpr-and-screenshot`, `color-scheme`, `scroll-timing`.
+   - webview: `webview-{clip,clip-hit,element,hit,stacking}`.
+   - typed IPC both directions, `bsdiff`, `update-journal`, `update-e2e`,
+     `relaunch`, `vite-dev`.
+   - System surface (this session): `system-menu-tray` (submenu fix),
+     `system-notifications` (balloons), `system-tray-icon-click` (symbol
+     ignored on Windows by design). `system-dialogs` is interactive (modal
+     native pickers) — verified manually; the TaskDialog message variant falls
+     back to `MessageBoxW` when comctl32 v6 isn't available (no manifest
+     in the dev host process).
+   - Keyboard fix (real regression): OSR renderer dropped key input until the
+     host claimed focus (`SetFocus` at attach + lazily in dispatch) and DOM
+     `key` derived from `windows_key_code`, so CHAR events with a zero key code
+     now fall back to the character itself (`e.key === 'A'` works again).
+   - `vite-dev`: initial serve + post-edit pickup verified. HMR _push_ is
+     best-effort — `bunx vite` under the Bun runtime on Windows drives a
+     rolldown-vite whose watcher stays silent (OS `fs.watch` fires fine),
+     so the test falls back to a plain `loadURL()` reload and warns.
+   - Environment-limited: `color-scheme-live-test.ts` is mac-only
+     (`defaults`/`osascript`) and stays off the Windows run matrix.
 - Real `native/win/bunium_system_win.cc` (menu/tray/notify/dialogs) + shared
   header; spec-driven HMENU app menu per window, NOTIFYICONDATA v4 tray with
   `TrackPopupMenu`, shell-balloon notifications, IFileDialog/TaskDialog on
@@ -1449,13 +1459,14 @@ minidumps → cdb `!analyze`, `/Zi` wrapper build for symbolicated stacks.
   `scripts/win-remote.sh` (remote `$PATH`/`$HOME` expansion fixed).
 
 ### Remaining follow-ups
+
 - Verify `TaskDialogIndirect` end-to-end in a packaged app: `bun.exe.manifest`
   (comctl32 v6) ships with the Windows package now, so the packaged
   `system-dialogs` message path should resolve the real TaskDialog -- needs a
   manual check on a desktop (the dev-tree `MessageBoxW` fallback is by design
   when no manifest is active).
 - Packaged-app verification is wired into `win-smoke.yml` + `win-remote.sh
-  pack` (fixture pixel-check); a packaged Windows app has not yet been run on
+pack` (fixture pixel-check); a packaged Windows app has not yet been run on
   every `examples/` entry (dev-tree sweep only).
 
 ## Phase 8 — Packaging, signing, notarization, build pipeline
@@ -1775,9 +1786,9 @@ Phase 10 complete for macOS.
 **Phase 10 extended to Linux + Windows (2026-08-26, Arch Linux x64):**
 
 - [x] **Linux `packaging/linux/cef-trim.sh` (new file, default ON in `packaging/linux/
-      package.sh`, `--no-trim` to opt out) removes the same SwiftShader software-Vulkan
+  package.sh`, `--no-trim` to opt out) removes the same SwiftShader software-Vulkan
       stack mac already trims** -- confirmed present in the vendored `vendor/cef-linux64/
-      Release/` distro (`libvk_swiftshader.so` 14.2M, `libvulkan.so.1` 1.4M,
+  Release/` distro (`libvk_swiftshader.so` 14.2M, `libvulkan.so.1` 1.4M,
       `vk_swiftshader_icd.json` 107B), same three-file trio as mac's `.dylib`/`.json` set,
       `.so` extension instead. Checked for a Linux equivalent of mac's regenerable
       `gpu_shader_cache.bin`: none exists in this distro layout (nothing under `Release/`
@@ -1791,11 +1802,11 @@ Phase 10 complete for macOS.
       trimmed automatically, and so the flag surface (`--no-trim`) matches mac/Windows for
       consistency.
 - [x] **Windows `packaging/win/cef-trim.sh` (new file, default ON in `packaging/win/
-      package.sh`, `--no-trim` to opt out), implemented by inference from the mac/Linux
+  package.sh`, `--no-trim` to opt out), implemented by inference from the mac/Linux
       SwiftShader trio's standard CEF distro naming** (`vk_swiftshader.dll`,
       `vulkan-1.dll`, `vk_swiftshader_icd.json`) -- **NOT verified against a real vendored
       Windows CEF distro**, since this dev box (Arch Linux x64) has no `vendor/
-      cef-windows-x64/` to check filenames against (Windows packaging only ever runs on a
+  cef-windows-x64/` to check filenames against (Windows packaging only ever runs on a
       real Windows host, per `packaging/win/package.sh`'s own header). `rm -f` on each
       candidate filename fails safe if a name is wrong (no-op, not an error), so this
       cannot break an existing packaging run even if unverified. Flagged in this file's own
@@ -1870,12 +1881,38 @@ pipeline produces it:
       URL prefix 404s (index.json URLs stale) but the flat
       `https://cef-builds.spotifycdn.com/cef_binary_<version>_macosarm64_minimal.tar.bz2`
       works and serves the pinned sha1.
-- [ ] **Publish** — `bunium` + `bunium-darwin-arm64` (from the staged dir) +
-      `create-bunium-app`; remove `private`; add the platform package as an
-      `optionalDependency` on the JS side. Needs npm credentials (user); tag
-      `v0.0.1` first to exercise release.yml.
-- [ ] **Linux (Phase 6) / Windows (Phase 7)** — new platforms get their own
-      platform-scoped packages the same way once those ports exist.
+- [x] **Linux (Phase 6) / Windows (Phase 7) platform packages** — extended the
+      darwin-only mechanism to all three platforms now that both ports exist:
+      `scripts/stage-release-artifacts-linux.sh` (pre-existing) plus new
+      `scripts/stage-release-artifacts-win.sh` staging `dist-release/bunium-win32-x64/
+    {shim/,framework/}`, with `framework/locales/` placed directly under
+      `framework/` (not under a `Resources/` subdir) to match `bunium_shim.cpp`'s
+      Windows `locales_dir_path` derivation and `src/paths.ts`'s
+      `platformPackagePaths()` (`resourcesDir === frameworkDir` on win32); no
+      install-name rewrite needed on Windows (DLL search order handles it).
+      New `scripts/verify-platform-package-win.sh` mirrors the mac/Linux verify
+      script but **copies** the staged package into the consumer fixture instead
+      of symlinking (NTFS symlinks need elevated privilege), reusing the shared
+      `verify-platform-package-main.ts` fixture. Root `package.json` gains
+      `release:artifacts:linux` / `release:artifacts:win` scripts and
+      `bunium-linux-x64` / `bunium-win32-x64` as pinned `0.0.1`
+      `optionalDependencies` alongside `bunium-darwin-arm64`.
+      `.github/workflows/release.yml` split from one macOS-only job into three
+      parallel jobs (`darwin-arm64` unchanged; `linux-x64` mirroring
+      `linux-smoke.yml`'s apt deps + `docker/linux/fetch-cef.sh` +
+      `native/linux/build.sh`; `win32-x64` mirroring `win-smoke.yml`'s
+      clang-cl-via-chocolatey + `CEF_ZIP_URL` fallback + `native/win/build.sh`),
+      each running its staging script then its verify script. `docs/guide/
+    publishing.md` rewritten to document all three platform layouts and the
+      3-job pipeline. Caveat: the Windows scripts are implemented but, like
+      `packaging/win/cef-trim.sh`, unverified on a real Windows machine — the
+      `win32-x64` job in `release.yml` will be their first exercise on an actual
+      Windows runner.
+- [ ] **Publish** — `bunium` + all three platform packages
+      (`bunium-darwin-arm64`, `bunium-linux-x64`, `bunium-win32-x64`, from their
+      staged dirs) + `create-bunium-app`; remove `private`. Needs npm
+      credentials (user); tag `v0.0.1` first to exercise the now-3-job
+      release.yml.
 
 ---
 

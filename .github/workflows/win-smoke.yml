@@ -56,19 +56,18 @@ jobs:
             echo "CEF distro already present"
             exit 0
           fi
-          url="${CEF_ZIP_URL:-https://cef-builds.spotifycdn.com/cef_binary_151.3.18+gbeff58d+chromium-151.0.7922.138_windows64_minimal.zip}"
+          url="${CEF_ZIP_URL:-https://cef-builds.spotifycdn.com/cef_binary_151.3.18+gbeff58d+chromium-151.0.7922.138_windows64_minimal.tar.bz2}"
           echo "downloading CEF from $url"
-          curl -L --fail -o cef.zip "$url" || {
+          curl -L --fail -o cef.tar.bz2 "$url" || {
             echo "::error::CEF download failed. Update CEF_ZIP_URL or the"
             echo "::error::fallback URL in this workflow to match the version"
             echo "::error::in vendor/cef-windows-x64/include/cef_version.h"
             exit 1
           }
-          # Distro zips contain a single cef_binary_*/ dir; normalize to
+          # Distro archives contain a single cef_binary_*/ dir; normalize to
           # vendor/cef-windows-x64.
           mkdir -p vendor
-          # tar (bsdtar) unzips on Git-for-Windows bash; unzip(1) is not guaranteed
-          tar -xf cef.zip -C vendor
+          tar -xf cef.tar.bz2 -C vendor
           inner=$(ls -d vendor/cef_binary_* | head -1)
           [ -n "$inner" ] || { echo "::error::unexpected zip layout"; exit 1; }
           rm -rf vendor/cef-windows-x64
