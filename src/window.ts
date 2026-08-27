@@ -1,7 +1,7 @@
 import { CString, type Pointer, ptr, toArrayBuffer } from "bun:ffi";
 import type { TrackedWindow } from "./app";
 import { app } from "./app";
-import { cstr, lib } from "./native";
+import { asPointer, cstr, lib } from "./native";
 
 export interface BuniumWindowOptions {
   url: string;
@@ -105,19 +105,23 @@ class WebviewManager {
 
   create(payload: WebviewCreatePayload): void {
     if (this.webviews.has(payload.id)) return; // shouldn't happen, defensive
-    const sublayerHandle = lib.symbols.bunium_create_native_sublayer(
-      this.windowHandle,
-      payload.x,
-      payload.y,
-      payload.width,
-      payload.height,
-    )!;
-    const viewHandle = lib.symbols.bunium_create_view(
-      cstr(payload.src),
-      payload.width,
-      payload.height,
-      0,
-    )!;
+    const sublayerHandle = asPointer(
+      lib.symbols.bunium_create_native_sublayer(
+        this.windowHandle,
+        payload.x,
+        payload.y,
+        payload.width,
+        payload.height,
+      )!,
+    );
+    const viewHandle = asPointer(
+      lib.symbols.bunium_create_view(
+        cstr(payload.src),
+        payload.width,
+        payload.height,
+        0,
+      )!,
+    );
     lib.symbols.bunium_attach_window(viewHandle, sublayerHandle);
     this.webviews.set(payload.id, { sublayerHandle, viewHandle });
   }
@@ -269,13 +273,15 @@ export class BuniumWindow<M extends BuniumMessageMap = BuniumMessageMap>
     const frame = options.frame ?? true;
     const resizable = options.resizable ?? true;
 
-    this.windowHandle = lib.symbols.bunium_create_native_window(
-      width,
-      height,
-      cstr(options.title ?? "bunium"),
-      transparent ? 1 : 0,
-      frame ? 1 : 0,
-    )!;
+    this.windowHandle = asPointer(
+      lib.symbols.bunium_create_native_window(
+        width,
+        height,
+        cstr(options.title ?? "bunium"),
+        transparent ? 1 : 0,
+        frame ? 1 : 0,
+      )!,
+    );
 
     // Deliberately a separate call, not more params on create_native_window
     // above: that function hit what looks like a bun:ffi bug/limitation
@@ -294,12 +300,14 @@ export class BuniumWindow<M extends BuniumMessageMap = BuniumMessageMap>
       options.maxHeight ?? 0,
     );
 
-    this.viewHandle = lib.symbols.bunium_create_view(
-      cstr(options.url),
-      width,
-      height,
-      transparent ? 1 : 0,
-    )!;
+    this.viewHandle = asPointer(
+      lib.symbols.bunium_create_view(
+        cstr(options.url),
+        width,
+        height,
+        transparent ? 1 : 0,
+      )!,
+    );
 
     lib.symbols.bunium_attach_window(this.viewHandle, this.windowHandle);
     this.webviews = new WebviewManager(this.windowHandle);

@@ -1,5 +1,5 @@
 import type { Pointer } from "bun:ffi";
-import { cstr, lib } from "../native";
+import { asPointer, cstr, lib } from "../native";
 import { systemEvents } from "./events";
 
 // Phase 5: native macOS menu bar. A Menu is a builder over an NSMenu --
@@ -26,7 +26,7 @@ export class Menu {
   private nextId = 1;
 
   constructor(items: MenuItemSpec[] = []) {
-    this.handle = lib.symbols.bunium_system_menu_create()!;
+    this.handle = asPointer(lib.symbols.bunium_system_menu_create()!);
     for (const item of items) this.add(item);
   }
 
@@ -42,10 +42,9 @@ export class Menu {
       return;
     }
     if (spec.submenu) {
-      const submenu = lib.symbols.bunium_system_menu_add_submenu(
-        menuHandle,
-        cstr(spec.label),
-      )!;
+      const submenu = asPointer(
+        lib.symbols.bunium_system_menu_add_submenu(menuHandle, cstr(spec.label))!,
+      );
       for (const child of spec.submenu) this.#addInto(submenu, child);
       return;
     }

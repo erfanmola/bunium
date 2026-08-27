@@ -1,5 +1,5 @@
 import type { Pointer } from "bun:ffi";
-import { cstr, lib } from "../native";
+import { asPointer, cstr, lib } from "../native";
 import { systemEvents } from "./events";
 import type { Menu } from "./menu";
 
@@ -23,7 +23,7 @@ export class Tray {
   readonly handle: Pointer;
 
   constructor(title = "") {
-    this.handle = lib.symbols.bunium_system_tray_create(cstr(title))!;
+    this.handle = asPointer(lib.symbols.bunium_system_tray_create(cstr(title))!);
   }
 
   setTitle(title: string): this {

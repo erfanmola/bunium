@@ -1,4 +1,4 @@
-import { dlopen, FFIType } from "bun:ffi";
+import { dlopen, FFIType, type Pointer } from "bun:ffi";
 import { paths } from "./paths";
 
 export { paths };
@@ -267,4 +267,12 @@ export const lib = dlopen(paths.shim, {
 
 export function cstr(s: string): Buffer {
   return Buffer.from(`${s}\0`);
+}
+
+// bun-types >=1.4 widened FFIType.ptr's return type to `Pointer | bigint`
+// (a real pointer only arrives as bigint if it exceeds Number.MAX_SAFE_INTEGER,
+// which no user-space address on any platform bunium targets does) --
+// callers that store/compare these as a plain Pointer need this narrowing.
+export function asPointer(p: Pointer | bigint): Pointer {
+  return typeof p === "bigint" ? (Number(p) as Pointer) : p;
 }
