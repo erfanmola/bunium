@@ -448,3 +448,23 @@ against `vendor/cef-macosarm64/`, including the `install_name_tool` framework-pa
 `ARCHITECTURE.md` §5). Requires `vendor/cef-macosarm64/build/libcef_dll_wrapper/libcef_dll_wrapper.a`
 to exist first — build once via
 `cmake -S vendor/cef-macosarm64 -B vendor/cef-macosarm64/build && cmake --build vendor/cef-macosarm64/build --target libcef_dll_wrapper`.
+
+## Smoke-test scripts + benchmark suite (2026-08-27)
+
+- `scripts/run-examples-mac.sh` — runs every `examples/*.ts` sequentially on
+  real macOS hardware (portable `run_with_timeout`, macOS has no GNU
+  `timeout`), pass/fail summary. `scripts/smoke-scaffolds-mac.sh` — scaffolds
+  all 6 `create-bunium-app` templates, `bun link bunium` (not published),
+  installs, builds, verifies via `create-bunium-app/verify-prod.ts`. Both
+  proven clean (37/37, 6/6) — rerun after any `src/`/template change before
+  assuming it still works.
+- `benchmark/` — bunium vs Electron comparison (minimal window pair +
+  mini-app pair with a literal-shared HTML/JS file between hosts),
+  `benchmark/scripts/{bench.ts,report.ts}` harness, results in
+  `benchmark/RESULTS.md` / `docs/guide/benchmarks.md`. Known finding not yet
+  acted on: `src/app.ts`'s `startPumpLoop` polls at a fixed 8ms
+  `setInterval` unconditionally rather than integrating with the OS run
+  loop — drives both idle CPU (~56% of one core) and IPC latency (~12ms vs
+  Electron's ~0.2ms). Real lead for a future perf phase; rerun
+  `benchmark/scripts/report.ts` after touching the pump loop to check
+  progress.
