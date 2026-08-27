@@ -71,15 +71,24 @@ jobs:
         env:
           BUNIUM_CEF_VERBOSE: "1"
           BUNIUM_BUNDLE_DEBUG: "1"
-          # GitHub's macos-14 runners are VMs with no real GPU -- CEF's GPU
-          # process can crash-loop under those constraints during a long idle
-          # (SIGTRAP-class, no stderr, matches the DIR_MODULE-style silent
-          # crash class seen on Linux/Windows). Force software compositing
-          # for this CI smoke test only; real desktops keep GPU accel.
           BUNIUM_CEF_SWITCHES: "--disable-gpu --disable-gpu-compositing"
         run: |
-          bun examples/basic-window.ts 2>&1 | tee smoke.log
-          grep -q "frameCount" smoke.log
+          cat > bisect.ts <<'EOF'
+          import { app, BuniumWindow } from "./src/index";
+          const html = `data:text/html,${encodeURIComponent("<h1>x</h1>")}`;
+          const win = new BuniumWindow({ url: html, width: 600, height: 400, title: "bisect" });
+          console.log("BISECT: window created");
+          await Bun.sleep(2000);
+          console.log("BISECT: slept");
+          const fc = win.frameCount;
+          console.log("BISECT: got frameCount", fc);
+          win.close();
+          console.log("BISECT: closed");
+          app.shutdown();
+          console.log("BISECT: shutdown returned");
+          EOF
+          bun bisect.ts 2>&1 | tee smoke.log
+          grep -q "BISECT: shutdown returned" smoke.log
 
       - name: Collect crash reports
         if: always()
