@@ -2038,6 +2038,18 @@ Verified after every change: 37/37 `examples/*.ts`, 6/6
       Electron's 451MB — a whole extra OS process is real memory). 5 of 8
       benchmarked metrics now beaten outright: disk size, Bun-vs-Node
       boot, process count, and idle RSS on both app shapes.
+- [x] **`--in-process-gpu` reverted per explicit user request**, right
+      after landing and verifying it. GPU service is back in its own
+      isolated process. Process count returns to 5 (tied with Electron,
+      not below); mini-app RSS returns to trailing Electron (minimal-app
+      RSS still wins — that one's carried by the spare-renderer disable,
+      not the GPU merge). Current standing: **3 of 8 metrics beaten
+      outright** (disk size, Bun-vs-Node boot, minimal-app RSS), 1 tied
+      (process count), 4 behind (mini-app RSS, startup, idle CPU, IPC
+      latency). The `--in-process-gpu` investigation and safety reasoning
+      (verified clean, safer than `--single-process`) stay documented in
+      `benchmark/RESULTS.md` since they're still real findings, just not a
+      shipped default.
 - [ ] **Idle CPU (~55-59% of one core, unchanged) — root cause narrowed
       further, still not fixed. Includes a real measurement mistake, made
       and corrected within this session.** Isolated

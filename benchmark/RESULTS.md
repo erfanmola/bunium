@@ -39,22 +39,36 @@ BENCH_REPS=5 BENCH_IDLE_SECONDS=6 bun benchmark/scripts/report.ts
   over each framework's IPC primitive) and the main-process file differ.
   Runs an automatic 50-call IPC round-trip sweep on load.
 
-## Current results (2026-08-28, "beat Electron" pass, final)
+## Current results (2026-08-28, after reverting `--in-process-gpu`)
+
+`--in-process-gpu` (merging Chromium's GPU service into the browser
+process) was shipped, then reverted per the user's explicit request —
+GPU stays in its own isolated OS process again. That was the change
+responsible for beating (not tying) process count and for mini-app RSS
+also beating Electron; both regress back with the revert. This table is
+the current, accurate state:
 
 | metric | bunium-minimal | electron-minimal | bunium-mini-app | electron-mini-app | winner |
 |---|---|---|---|---|---|
 | framework/runtime on-disk size | 260M | 306M | — | — | **bunium** |
 | process boot (bare `-e "exit(0)"`) | 6.3ms (bun) | 36.6ms (node) | — | — | **bunium** |
-| process count (main + helpers) | **4** | 5 | **4** | 5 | **bunium** |
-| idle RSS, full process tree (MB) | **365.4** | 418.5 | **429.6** | 450.9 | **bunium** |
-| process start → first paint (ms) | 300 | **160** | 331 | **195** | Electron |
-| idle CPU, full process tree (%) | 59 | **0** | 59 | **0** | Electron |
-| IPC round trip, avg of 50 (ms) | — | — | 3.2 | **0.5** | Electron |
+| idle RSS, minimal app (MB) | **403.2** | 418.5 | — | — | **bunium** |
+| process count (main + helpers) | 5 | 5 | 5 | 5 | tied |
+| idle RSS, mini-app (MB) | 467.2 | 450.9 | — | — | Electron |
+| process start → first paint (ms) | 302 | **160** | 329 | **194** | Electron |
+| idle CPU, full process tree (%) | 58-60 | **0** | 58-60 | **0** | Electron |
+| IPC round trip, avg of 50 (ms) | — | — | 2.6 | **0.5** | Electron |
 | mini-app DOM render, 200 rows (ms) | — | — | 0.9 | 1.0 | ~tied |
 
-**5 of 8 metrics beaten outright** (not tied): disk size, process boot,
-process count, minimal-app RSS, mini-app RSS. **3 remain behind**: startup
-time, idle CPU, IPC latency — see below for what was tried on each.
+**3 of 8 metrics beaten outright:** disk size, process boot, minimal-app
+RSS. **1 tied:** process count (was beaten outright with
+`--in-process-gpu`, see below — reverted). **4 remain behind:** mini-app
+RSS, startup time, idle CPU, IPC latency.
+
+`--in-process-gpu` is documented below (what it did, why it was safe, why
+it was tried) since the investigation and the tradeoff reasoning are still
+real and worth keeping on record even though the change itself isn't
+shipped.
 
 ## What actually shipped (verified: 37/37 examples, 6/6 scaffolds, every commit)
 
@@ -69,19 +83,23 @@ time, idle CPU, IPC latency — see below for what was tried on each.
    (`--disable-features=SpareRendererForSitePerProcess`) — a bunium
    window's one navigation is known at creation time, no "next tab" to
    pre-warm a spare renderer for.
-3. **Merged Chromium's GPU service into the browser process**
-   (`--in-process-gpu`) — GPU compositing was already disabled (CPU-
-   readback OSR path), so the isolated GPU process was pure overhead with
-   no remaining security benefit. Deliberately **not** `--single-process`:
-   that also merges the *renderer*, Chromium's real security boundary
-   against untrusted content `<bunium-webview>` can load — tested working
-   (drops to 1 process) but rejected as unsafe for a general-purpose
-   framework regardless of the benchmark win.
+3. **Merged Chromium's GPU service into the browser process
+   (`--in-process-gpu`) — shipped, then reverted per user request.** GPU
+   compositing was already disabled (CPU-readback OSR path), so the
+   isolated GPU process was pure overhead with no remaining security
+   benefit — the merge itself verified clean (37/37 examples, 6/6
+   scaffolds) and dropped process count 6→4 (genuinely below Electron's 5,
+   not tied), with RSS following on both app shapes. Deliberately **not**
+   `--single-process`: that also merges the *renderer*, Chromium's real
+   security boundary against untrusted content `<bunium-webview>` can
+   load — tested working (drops to 1 process) but rejected as unsafe for a
+   general-purpose framework regardless of the benchmark win. Reverted
+   afterward on the user's explicit instruction, independent of the
+   `--single-process` safety call — process count is back to 5 (tied with
+   Electron) and mini-app RSS is back behind.
 
-(2) and (3) together dropped process count 6→4 (Electron is 5 — **beaten,
-not tied**), and RSS followed: both minimal and mini-app RSS now beat
-Electron, the second one only flipping after the GPU-process merge (a
-whole extra OS process is real memory).
+(2) alone (spare-renderer disable) accounts for the standing process-count
+tie (6→5) and the minimal-app RSS win that survives the revert.
 
 ## What was tried on idle CPU, including a real mistake worth recording
 

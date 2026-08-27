@@ -18,36 +18,47 @@ Two comparable app pairs, same UI on both sides:
 
 ## Results
 
+`--in-process-gpu` (merging Chromium's GPU service into the browser
+process) was shipped, verified, then reverted at the user's explicit
+request — GPU stays in its own isolated OS process. That change was
+responsible for beating (not tying) process count and for the mini-app
+RSS win; both regress with the revert. Current, accurate numbers:
+
 | metric | bunium | Electron | winner |
 |---|---|---|---|
 | framework/runtime on-disk size | 260M | 306M | **bunium** |
 | process boot (bare `-e "exit(0)"`) | 6.3ms (bun) | 36.6ms (node) | **bunium** |
-| process count (main + helpers) | **4** | 5 | **bunium** |
-| idle RSS, minimal app (MB) | **365.4** | 418.5 | **bunium** |
-| idle RSS, mini-app (MB) | **429.6** | 450.9 | **bunium** |
-| process start → first paint (ms) | 300-331 | 160-195 | Electron |
-| idle CPU, full process tree (%) | 59 | **0** | Electron |
-| IPC round trip, avg of 50 (ms) | 1.3-3.2 | 0.2-0.5 | Electron |
+| idle RSS, minimal app (MB) | **403.2** | 418.5 | **bunium** |
+| process count (main + helpers) | 5 | 5 | tied |
+| idle RSS, mini-app (MB) | 467.2 | 450.9 | Electron |
+| process start → first paint (ms) | 302-329 | 160-194 | Electron |
+| idle CPU, full process tree (%) | 58-60 | **0** | Electron |
+| IPC round trip, avg of 50 (ms) | 2.6 | 0.5 | Electron |
 | mini-app DOM render, 200 rows (ms) | 0.9 | 1.0 | ~tied |
 
-**5 of 8 metrics beaten outright, not tied:** disk size, process boot,
-process count, and idle RSS on both app shapes. **3 remain behind**,
-each root-caused with real (if inconclusive) investigation — see below.
+**3 of 8 metrics beaten outright:** disk size, process boot, minimal-app
+RSS. **1 tied:** process count. **4 remain behind:** mini-app RSS, startup
+time, idle CPU, IPC latency.
 
 ## What actually closed the gap
 
-Three native changes: an adaptive CEF message pump (`external_message_pump`
-+ `OnScheduleMessagePumpWork` replacing a fixed 8ms `setInterval`) cut IPC
-latency ~4-9x; disabling Chromium's spare-renderer-process feature (bunium
-already knows its one navigation at window-creation time — no "next tab"
-to pre-warm for); and merging Chromium's GPU service into the browser
-process (`--in-process-gpu` — GPU compositing was already off for the
-CPU-readback OSR path, so the isolated GPU process was pure overhead).
-The last two together dropped process count from 6 to 4 — genuinely below
-Electron's 5, not matching it — and RSS on both app shapes followed,
-flipping to a bunium win.
+Two native changes stand: an adaptive CEF message pump
+(`external_message_pump` + `OnScheduleMessagePumpWork` replacing a fixed
+8ms `setInterval`) cut IPC latency ~4-9x; and disabling Chromium's
+spare-renderer-process feature (bunium already knows its one navigation
+at window-creation time — no "next tab" to pre-warm for), which accounts
+for the process-count tie (was 6, now 5) and the minimal-app RSS win.
 
-Deliberately **not** shipped: `--single-process` (tested working, drops to
+A third, merging Chromium's GPU service into the browser process
+(`--in-process-gpu` — GPU compositing was already off for the CPU-readback
+OSR path, so the isolated GPU process was pure overhead), verified clean
+and genuinely dropped process count to 4 (below Electron's 5) with RSS
+following on both app shapes — but was reverted per the user's explicit
+instruction, independent of any correctness concern. `benchmark/RESULTS.md`
+keeps the full writeup since the investigation and safety reasoning are
+still real.
+
+Deliberately never shipped: `--single-process` (tested working, drops to
 a single OS process, but also merges the *renderer* — Chromium's actual
 security boundary against untrusted content `<bunium-webview>` can load.
 Rejected as unsafe for a general-purpose framework regardless of the
@@ -96,7 +107,7 @@ idle-CPU episode above is a concrete demonstration of why short sampling
 windows on this metric are untrustworthy specifically — always sample past
 any possible delayed-onset behavior. macOS arm64 only; the shipped native
 changes live in shared code compiled into the Linux/Windows builds too, so
-those platforms should inherit the process-count/RSS/IPC-latency wins once
+those platforms should inherit the RSS/IPC-latency improvements once
 rebuilt there, but this wasn't verified on those platforms. The Electron
 mini-app uses `nodeIntegration: true, contextIsolation: false` for an
 IPC-shape comparable to bunium's single-hop channel — a production
