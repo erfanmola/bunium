@@ -71,6 +71,12 @@ jobs:
         env:
           BUNIUM_CEF_VERBOSE: "1"
           BUNIUM_BUNDLE_DEBUG: "1"
+          # GitHub's macos-14 runners are VMs with no real GPU -- CEF's GPU
+          # process can crash-loop under those constraints during a long idle
+          # (SIGTRAP-class, no stderr, matches the DIR_MODULE-style silent
+          # crash class seen on Linux/Windows). Force software compositing
+          # for this CI smoke test only; real desktops keep GPU accel.
+          BUNIUM_CEF_SWITCHES: "--disable-gpu --disable-gpu-compositing"
         run: |
           bun examples/basic-window.ts 2>&1 | tee smoke.log
           grep -q "frameCount" smoke.log
@@ -79,8 +85,11 @@ jobs:
         if: always()
         run: |
           mkdir -p crash-reports
-          cp -r ~/Library/Logs/DiagnosticReports/*.ips crash-reports/ 2>/dev/null || true
-          cp -r ~/Library/Logs/DiagnosticReports/*.crash crash-reports/ 2>/dev/null || true
+          cp ~/Library/Logs/DiagnosticReports/*.ips crash-reports/ 2>/dev/null || true
+          cp ~/Library/Logs/DiagnosticReports/*.crash crash-reports/ 2>/dev/null || true
+          sudo cp /Library/Logs/DiagnosticReports/*.ips crash-reports/ 2>/dev/null || true
+          sudo cp /Library/Logs/DiagnosticReports/*.crash crash-reports/ 2>/dev/null || true
+          sudo chown -R "$(whoami)" crash-reports || true
           ls -la crash-reports || true
 
       - name: Package fixture app + verify packaged run
