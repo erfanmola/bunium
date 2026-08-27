@@ -73,22 +73,8 @@ jobs:
           BUNIUM_BUNDLE_DEBUG: "1"
           BUNIUM_CEF_SWITCHES: "--disable-gpu --disable-gpu-compositing"
         run: |
-          cat > bisect.ts <<'EOF'
-          import { app, BuniumWindow } from "./src/index";
-          const html = `data:text/html,${encodeURIComponent("<h1>x</h1>")}`;
-          const win = new BuniumWindow({ url: html, width: 600, height: 400, title: "bisect" });
-          console.log("BISECT: window created");
-          await Bun.sleep(2000);
-          console.log("BISECT: slept");
-          const fc = win.frameCount;
-          console.log("BISECT: got frameCount", fc);
-          win.close();
-          console.log("BISECT: closed");
-          app.shutdown();
-          console.log("BISECT: shutdown returned");
-          EOF
-          bun bisect.ts 2>&1 | tee smoke.log
-          grep -q "BISECT: shutdown returned" smoke.log
+          bun examples/basic-window.ts 2>&1 | tee smoke.log
+          grep -q "frameCount" smoke.log
 
       - name: Collect crash reports
         if: always()
@@ -103,6 +89,11 @@ jobs:
 
       - name: Package fixture app + verify packaged run
         timeout-minutes: 8
+        env:
+          # Same GPU-less-runner fix as the smoke step above -- the packaged
+          # launcher execs bun directly and inherits this env, but doesn't
+          # get it for free just because the dev-mode step above set it.
+          BUNIUM_CEF_SWITCHES: "--disable-gpu --disable-gpu-compositing"
         run: |
           bash packaging/mac/package.sh \
             -a packaging/mac/fixture-app -n BuniumFixture \
