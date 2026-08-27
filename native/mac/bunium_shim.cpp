@@ -215,7 +215,12 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
   settings.no_sandbox = true;
   settings.windowless_rendering_enabled = true;
   settings.multi_threaded_message_loop = false;
-  settings.external_message_pump = false;
+  // true: CEF tells the host exactly when it next needs
+  // CefDoMessageLoopWork() pumped, via BuniumApp::OnScheduleMessagePumpWork
+  // (bunium_common.h), instead of the host blind-polling on a fixed
+  // interval. src/app.ts's pump loop uses this to size its next tick's
+  // delay adaptively (idle -> a bounded floor instead of a constant 8ms).
+  settings.external_message_pump = true;
   // BUNIUM_CEF_VERBOSE raises the CEF log severity to INFO for debugging
   // packaged-app issues; default WARNING keeps normal runs quiet.
   settings.log_severity =
@@ -260,6 +265,23 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
 }
 
 BUNIUM_EXPORT void bunium_do_message_loop_work() { CefDoMessageLoopWork(); }
+
+// Consume-and-clear: grabs whatever wake deadline
+// BuniumApp::OnScheduleMessagePumpWork (bunium_common.h) last recorded and
+// resets it to "none pending" in the same op. Returns -1 if CEF has no
+// scheduled work, else the clamped->=0 ms remaining until that deadline.
+// If a fresh OnScheduleMessagePumpWork call races in right after this
+// exchange, it just sets a new deadline for the *next* poll -- worst case
+// is one extra/early tick, never a missed one. int32_t (not i64/bigint) is
+// deliberate: values are always small (capped by src/app.ts's idle floor
+// before use) and this avoids bun:ffi's bigint-return handling entirely.
+BUNIUM_EXPORT int32_t bunium_get_next_pump_delay_ms() {
+  int64_t wake = g_next_wake_time_ms.exchange(-1, std::memory_order_relaxed);
+  if (wake == -1)
+    return -1;
+  int64_t delay = wake - MonotonicNowMs();
+  return static_cast<int32_t>(delay > 0 ? delay : 0);
+}
 
 // Sets the root directory the bunium://app/... custom scheme (Phase 3 prod
 // static-file serving) resolves against -- see BuniumSchemeHandlerFactory's

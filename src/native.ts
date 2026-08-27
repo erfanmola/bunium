@@ -15,6 +15,7 @@ export const lib = dlopen(paths.shim, {
     returns: FFIType.i32,
   },
   bunium_do_message_loop_work: { args: [], returns: FFIType.void },
+  bunium_get_next_pump_delay_ms: { args: [], returns: FFIType.i32 },
   // Sets the single global root directory that the "bunium://app/<path>"
   // custom scheme resolves against (see BuniumSchemeHandlerFactory in
   // bunium_common.h). Must be called before any loadURL("bunium://...")

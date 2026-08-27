@@ -22,9 +22,25 @@ export interface TrackedWindow {
 // bridge, resize detection is just "did the number change since last tick,"
 // polled from here alongside the CEF/Cocoa pumps that already run every
 // tick anyway.
+// Idle floor for the adaptive pump loop (see startPumpLoop): how long to
+// wait before the next tick when CEF has no scheduled work
+// (bunium_get_next_pump_delay_ms() returns -1). CEF-driven activity
+// (animation, scrolling, an in-flight IPC reply) self-drives the delay
+// toward 0 via its own OnScheduleMessagePumpWork requests, same as it
+// would under Electron's native run-loop integration -- this floor only
+// bounds the truly-idle case. Kept at 8 (the old fixed interval's value,
+// not raised) deliberately: profiling found bunium's actual idle-CPU cost
+// is dominated by CEF's own continuous windowless-OSR compositing (tied to
+// windowless_frame_rate, independent of how often we poll), not by pump
+// scheduling overhead -- so a larger floor bought no CPU win and measurably
+// hurt IPC latency (drained on the same tick cadence). See
+// benchmark/RESULTS.md's "beat Electron" section for the full writeup and
+// why closing the CPU gap needs a different, OSR-repaint-focused fix.
+const PUMP_IDLE_FLOOR_MS = 8;
+
 class BuniumApp {
   private initialized = false;
-  private pumpTimer: ReturnType<typeof setInterval> | null = null;
+  private pumpTimer: ReturnType<typeof setTimeout> | null = null;
   private windows = new Set<TrackedWindow>();
   private lastSizes = new Map<
     TrackedWindow,
@@ -32,6 +48,7 @@ class BuniumApp {
   >();
   private widthBuf = new Int32Array(1);
   private heightBuf = new Int32Array(1);
+  private diagTickCount?: number;
 
   init(): void {
     if (this.initialized) return;
@@ -69,13 +86,29 @@ class BuniumApp {
     this.windowCreatedAt.delete(win);
   }
 
-  private startPumpLoop(intervalMs = 8): void {
-    this.pumpTimer = setInterval(() => {
-      lib.symbols.bunium_do_message_loop_work();
-      lib.symbols.bunium_pump_native_events();
-      this.pollWindows();
-      systemEvents.drain();
-    }, intervalMs);
+  // Adaptive, not a fixed interval: CEF's external_message_pump mode
+  // (native/mac/bunium_shim.cpp) means CEF tells us exactly when it next
+  // needs CefDoMessageLoopWork() via OnScheduleMessagePumpWork
+  // (native/mac/bunium_common.h), instead of us blind-polling forever.
+  // Each tick still does exactly what the old fixed-interval loop did, in
+  // the same order -- only the *scheduling* changed.
+  private tick = (): void => {
+    lib.symbols.bunium_do_message_loop_work();
+    lib.symbols.bunium_pump_native_events();
+    this.pollWindows();
+    systemEvents.drain();
+
+    const requested = lib.symbols.bunium_get_next_pump_delay_ms();
+    const delay = requested >= 0 ? Math.min(requested, PUMP_IDLE_FLOOR_MS) : PUMP_IDLE_FLOOR_MS;
+    if (process.env.BUNIUM_PUMP_DIAG) {
+      this.diagTickCount = (this.diagTickCount ?? 0) + 1;
+      console.error(`[pump-diag-js] tick #${this.diagTickCount} requested=${requested} delay=${delay}`);
+    }
+    this.pumpTimer = setTimeout(this.tick, delay);
+  };
+
+  private startPumpLoop(): void {
+    this.pumpTimer = setTimeout(this.tick, 0);
   }
 
   private pollWindows(): void {
@@ -119,7 +152,7 @@ class BuniumApp {
 
   shutdown(): void {
     if (!this.initialized) return;
-    if (this.pumpTimer) clearInterval(this.pumpTimer);
+    if (this.pumpTimer) clearTimeout(this.pumpTimer);
     lib.symbols.bunium_shutdown();
     this.initialized = false;
   }

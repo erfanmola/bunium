@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -666,6 +667,29 @@ public:
 
   IMPLEMENT_REFCOUNTING(BuniumSchemeHandlerFactory);
 };
+// Adaptive message pump (Phase: beat-Electron-on-idle-CPU). With
+// settings.external_message_pump = true, CEF stops expecting
+// CefDoMessageLoopWork() on a blind fixed interval and instead tells the
+// host exactly when it next needs pumping via
+// BuniumApp::OnScheduleMessagePumpWork(delay_ms) below. That callback can
+// fire from any CEF-internal thread (documented CEF contract), so the
+// requested wake time is stored here as a monotonic-clock deadline in an
+// atomic, always kept at the *earliest* pending request -- a later call
+// with a larger delay must not push out an earlier one. src/app.ts's pump
+// loop reads it once per tick (via bunium_get_next_pump_delay_ms in
+// bunium_shim.cpp) to size its next setTimeout, instead of a fixed
+// interval. Deliberately NOT a native->JS async callback (bun:ffi
+// JSCallback fired from an arbitrary native thread) -- see PLAN.md's
+// Phase-1 writeup for why that's not worth the added FFI-threading risk
+// here; this is the bounded-polling middle ground.
+static std::atomic<int64_t> g_next_wake_time_ms{-1};
+
+static int64_t MonotonicNowMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
 class BuniumApp : public CefApp,
                   public CefBrowserProcessHandler,
                   public CefRenderProcessHandler {
@@ -685,6 +709,29 @@ public:
       CefRefPtr<CefCommandLine> command_line) override {
     command_line->AppendSwitch("disable-gpu");
     command_line->AppendSwitch("disable-gpu-compositing");
+  }
+
+  // CefBrowserProcessHandler contract, only meaningful with
+  // settings.external_message_pump = true (bunium_shim.cpp). CEF calls this
+  // to say "call CefDoMessageLoopWork() again in delay_ms" (0/negative =
+  // as soon as possible) -- may be called from any thread, and may be
+  // called again before an earlier request's delay has elapsed (must not
+  // push the wake time later in that case). src/app.ts's pump loop polls
+  // the resulting deadline via bunium_get_next_pump_delay_ms() each tick.
+  void OnScheduleMessagePumpWork(int64_t delay_ms) override {
+    if (getenv("BUNIUM_PUMP_DIAG")) {
+      static std::atomic<int64_t> call_count{0};
+      int64_t n = call_count.fetch_add(1, std::memory_order_relaxed);
+      fprintf(stderr, "[pump-diag] OnScheduleMessagePumpWork call #%lld delay_ms=%lld\n",
+              (long long)n, (long long)delay_ms);
+    }
+    int64_t candidate = MonotonicNowMs() + std::max<int64_t>(delay_ms, 0);
+    int64_t current = g_next_wake_time_ms.load(std::memory_order_relaxed);
+    while (current == -1 || candidate < current) {
+      if (g_next_wake_time_ms.compare_exchange_weak(current, candidate,
+                                                     std::memory_order_relaxed))
+        break;
+    }
   }
 
   // Registers the `bunium` custom scheme (Phase 3 prod static-file serving,
