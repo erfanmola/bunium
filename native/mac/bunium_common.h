@@ -709,19 +709,6 @@ public:
       CefRefPtr<CefCommandLine> command_line) override {
     command_line->AppendSwitch("disable-gpu");
     command_line->AppendSwitch("disable-gpu-compositing");
-    // GPU compositing is already off (line above) -- the CPU-readback OSR
-    // path (ARCHITECTURE.md) doesn't touch the GPU process for anything
-    // that still matters. Chromium's GPU process is primarily isolated for
-    // defense against malicious GPU-driver exploits reachable from
-    // accelerated compositing/WebGL -- a real concern with GPU compositing
-    // ON, much less relevant with it forced off. Merging it into the
-    // browser process removes one full OS process for free (verified: no
-    // paint/functional regression across the full example/scaffold sweep).
-    // Deliberately NOT --single-process: that would also merge the
-    // *renderer*, which is Chromium's actual security boundary against
-    // arbitrary/untrusted web content -- bunium's <bunium-webview> can load
-    // real remote content, so that boundary has to stay a real process.
-    command_line->AppendSwitch("in-process-gpu");
     // Chromium's spare-renderer-process feature pre-spawns an idle renderer
     // ahead of the next navigation as a latency optimization for real
     // browsers with tabs/link-clicking. A bunium window's one navigation is
