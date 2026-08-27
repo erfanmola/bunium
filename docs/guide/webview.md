@@ -1,10 +1,7 @@
 # `<bunium-webview>` tag
 
 Embed another page as a real DOM element, composited as a native sublayer — not a
-windowed child view (that's what makes Electron's own `<webview>` janky). The
-compositing primitive is per-platform (`CAMetalLayer` on macOS, an X11 pixmap
-sublayer on Linux, a GDI-blitted child region on Windows); the DOM-facing API is
-identical everywhere.
+windowed child view (that's what makes Electron's own `<webview>` janky).
 
 ## Usage
 

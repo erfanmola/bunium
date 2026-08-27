@@ -20,7 +20,7 @@ features:
     details: CEF (Chromium Embedded Framework) renders every window — no WebView shims, no system-browser inconsistencies.
   - title: Typed IPC
     details: One generic transport, discriminated-union message maps checked on both sides at compile time.
-  - title: DOM <bunium-webview>
+  - title: DOM &lt;bunium-webview&gt;
     details: A real custom element that composites as a native sublayer — clipped, z-ordered, hit-testable.
   - title: Vite dev + bunium:// prod
     details: Point loadURL at the dev server for HMR in dev; serve built output over a custom scheme in prod.

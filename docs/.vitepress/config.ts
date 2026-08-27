@@ -26,7 +26,7 @@ export default defineConfig({
           { text: "Getting started", link: "/guide/getting-started" },
           { text: "Window", link: "/guide/window" },
           { text: "Typed IPC", link: "/guide/ipc" },
-          { text: "<bunium-webview> tag", link: "/guide/webview" },
+          { text: "&lt;bunium-webview&gt; tag", link: "/guide/webview" },
           { text: "System features", link: "/guide/system" },
           { text: "Packaging", link: "/guide/packaging" },
           { text: "Auto-update", link: "/guide/updates" },
