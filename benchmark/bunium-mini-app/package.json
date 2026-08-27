@@ -1,0 +1,12 @@
+{
+  "name": "bunium-mini-app-bench",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "start": "bun run main.ts"
+  },
+  "dependencies": {
+    "bunium": "link:bunium"
+  }
+}

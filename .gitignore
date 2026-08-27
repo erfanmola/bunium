@@ -13,3 +13,6 @@ docs/.vitepress/dist/
 docs/.vitepress/cache/
 *.log
 .DS_Store
+# Machine-specific benchmark run output -- benchmark/RESULTS.md documents
+# how to regenerate; the harness/apps themselves stay tracked.
+benchmark/results/

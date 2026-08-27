@@ -30,6 +30,7 @@ export default defineConfig({
           { text: "System features", link: "/guide/system" },
           { text: "Packaging", link: "/guide/packaging" },
           { text: "Auto-update", link: "/guide/updates" },
+          { text: "Benchmarks", link: "/guide/benchmarks" },
         ],
       },
       {
