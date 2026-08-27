@@ -11,7 +11,7 @@
 //                       bunium_subprocess.exe (browser-process DLL dir)
 //     Resources/        CEF Resources/ (paks, icudtl.dat, locales/) -- the
 //                       dir passed to bunium_init's resources_dir_path
-//     app/              the app (dist/ + electron/main.ts + node_modules)
+//     app/              the app (dist/ + bunium/main.ts + node_modules)
 //
 // What the launcher does (in order):
 //   1. exports the four BUNIUM_* path overrides src/paths.ts reads, pointing
@@ -20,7 +20,7 @@
 //      Resources/, ROOT_CACHE_PATH at %LOCALAPPDATA%\<Name>\CEF);
 //   2. prepends Runtime/ to PATH, so the loader resolves bunium_shim.dll's
 //      libcef.dll import the same way the dev tree does (DLL search order);
-//   3. spawns bun.exe on app/electron/main.ts, inheriting the caller's
+//   3. spawns bun.exe on app/bunium/main.ts, inheriting the caller's
 //      standard handles so a CI/ssh run still sees the child's stdout/stderr,
 //      and propagates its exit code (the packaging fixture verifier relies on
 //      both).
@@ -96,7 +96,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR lpCmdLine,
   WCHAR *shim = JoinPath(runtime, L"bunium_shim.dll", NULL);
   WCHAR *subproc = JoinPath(runtime, L"bunium_subprocess.exe", NULL);
   WCHAR *bunPath = JoinPath(self, L"bun.exe", NULL);
-  WCHAR *mainPath = JoinPath(self, L"app", L"electron\\main.ts");
+  WCHAR *mainPath = JoinPath(self, L"app", L"bunium\\main.ts");
   if (!runtime || !resources || !shim || !subproc || !bunPath || !mainPath)
     return 127;
 

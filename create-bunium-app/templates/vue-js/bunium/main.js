@@ -3,14 +3,14 @@ import { join } from "node:path";
 import { app, BuniumWindow } from "bunium";
 
 // Dev: point loadURL() at the running Vite dev server (matches
-// vite.config.ts's fixed strictPort) -- HMR works for free since a bunium
+// vite.config.js's fixed strictPort) -- HMR works for free since a bunium
 // window is a real Chromium tab. Prod: set the app root to the built
 // `dist/` output and load it through the "bunium://app/" custom scheme
 // (see bunium's Phase 3 plan entry for why not `file://`). Toggle via
-// NODE_ENV, set by the "electron:dev" script only in dev.
+// NODE_ENV, set by the "bunium:dev" script only in dev.
 const isDev = process.env.NODE_ENV !== "production";
 
-let win: BuniumWindow;
+let win;
 
 if (isDev) {
   win = new BuniumWindow({

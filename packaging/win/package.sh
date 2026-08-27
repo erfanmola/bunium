@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Packages a built bunium app (create-bunium-app output: electron/main.ts +
+# Packages a built bunium app (create-bunium-app output: bunium/main.ts +
 # built dist/ + a "bunium" package.json dependency) into a Windows x64
 # directory layout -- the Windows counterpart of packaging/mac/package.sh,
 # with the dev-tree-native-path assumptions reworked for the packaged layout.
@@ -19,7 +19,7 @@
 #                        BUNIUM_ROOT_CACHE_PATH, prepends Runtime/ to PATH
 #                        (so bunium_shim.dll's libcef.dll import resolves,
 #                        the dev-tree recipe), then spawns bun.exe on
-#                        app/electron/main.ts, inheriting std handles and
+#                        app/bunium/main.ts, inheriting std handles and
 #                        propagating the exit code
 #     bun.exe            the Bun binary itself (copied from $BUN_BIN)
 #     bun.exe.manifest   comctl32 v6 SxS dependency -> the shim's
@@ -42,7 +42,7 @@
 #     Resources/         CEF Resources/ (paks, icudtl.dat, locales/) -- the
 #                        resources_dir_path handed to bunium_init (locales
 #                        dir derived from it by the shim)
-#     app/               dist/ + electron/main.ts + package.json + a real
+#     app/               dist/ + bunium/main.ts + package.json + a real
 #                        (not symlinked) node_modules/bunium materialized
 #                        from src/ + package.json
 #
@@ -110,9 +110,9 @@ APP_DIR="$(cd "$APP_DIR" && pwd -W)"
 OUT_DIR="$(cd "$OUT_DIR" && pwd -W)"
 BUNIUM_REPO="$(cd "$BUNIUM_REPO" && pwd -W)"
 
-[ -d "$APP_DIR/electron" ] || { echo "error: $APP_DIR/electron missing (main-process dir)" >&2; exit 1; }
+[ -d "$APP_DIR/bunium" ] || { echo "error: $APP_DIR/bunium missing (main-process dir)" >&2; exit 1; }
 [ -d "$APP_DIR/dist" ] || { echo "error: $APP_DIR/dist missing -- run the app's build first" >&2; exit 1; }
-[ -f "$APP_DIR/electron/main.ts" ] || { echo "error: $APP_DIR/electron/main.ts missing" >&2; exit 1; }
+[ -f "$APP_DIR/bunium/main.ts" ] || { echo "error: $APP_DIR/bunium/main.ts missing" >&2; exit 1; }
 [ -n "$NAME" ] || NAME="$(basename "$APP_DIR")"
 case "$NAME" in
   *" "*) echo "error: app name must not contain spaces (launcher exe layout)". >&2; exit 1 ;;
@@ -182,7 +182,7 @@ if [ "$LOCALES" != "all" ]; then
   done
 fi
 
-# --- app/: the user app (dist/ + electron/ + package.json) + a real (not
+# --- app/: the user app (dist/ + bunium/ + package.json) + a real (not
 # symlinked) node_modules/bunium materialized from the bunium repo so
 # "import { app } from 'bunium'" resolves inside the package. tar instead of
 # rsync: Git-for-Windows bash has no rsync, and tar's --exclude + stream

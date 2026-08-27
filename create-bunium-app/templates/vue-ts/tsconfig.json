@@ -7,5 +7,5 @@
     "noEmit": true,
     "types": ["bun-types"]
   },
-  "include": ["src/**/*.ts", "src/**/*.vue", "electron/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.vue", "bunium/**/*.ts"]
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Packages a built bunium app (create-bunium-app output: electron/main.ts +
+# Packages a built bunium app (create-bunium-app output: bunium/main.ts +
 # built dist/ + a "bunium" package.json dependency) into a macOS .app bundle
 # (and optionally a DMG), with the dev-tree-native-path assumptions reworked
 # for the standard bundled layout -- this is the Phase 8 redo of the
@@ -13,7 +13,7 @@
 #       MacOS/
 #         Name          # shell launcher: exports BUNIUM_* env vars (see
 #                        # src/native.ts for which paths they override) then
-#                        # execs `bun Resources/app/electron/main.ts`
+#                        # execs `bun Resources/app/bunium/main.ts`
 #         bun           # the Bun binary itself (copied from $BUN_BIN)
 #       Frameworks/
 #         Chromium Embedded Framework.framework/
@@ -38,7 +38,7 @@
 #       Resources/
 #         app/
 #           dist/                   # the app's built web assets
-#           electron/main.ts         # main-process entry, run as-is by bun
+#           bunium/main.ts         # main-process entry, run as-is by bun
 #           package.json
 #           node_modules/bunium/     # materialized bunium package (src/ +
 #                                    # package.json -- NOT a file: symlink,
@@ -111,9 +111,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$APP_DIR" ] || { echo "missing -a <app-dir>" >&2; usage; }
-[ -d "$APP_DIR/electron" ] || { echo "error: $APP_DIR/electron missing (main-process dir)" >&2; exit 1; }
+[ -d "$APP_DIR/bunium" ] || { echo "error: $APP_DIR/bunium missing (main-process dir)" >&2; exit 1; }
 [ -d "$APP_DIR/dist" ] || { echo "error: $APP_DIR/dist missing -- run the app's build first" >&2; exit 1; }
-[ -f "$APP_DIR/electron/main.ts" ] || { echo "error: $APP_DIR/electron/main.ts missing" >&2; exit 1; }
+[ -f "$APP_DIR/bunium/main.ts" ] || { echo "error: $APP_DIR/bunium/main.ts missing" >&2; exit 1; }
 [ -n "$NAME" ] || NAME="$(basename "$APP_DIR")"
 case "$NAME" in
   *" "*) echo "error: app name must not contain spaces (bundle layout/CFBundleExecutable)". >&2; exit 1 ;;
@@ -144,7 +144,7 @@ export BUNIUM_FRAMEWORK_DIR="\$APP_ROOT/Frameworks/Chromium Embedded Framework.f
 CACHE_ROOT="\$HOME/Library/Application Support/$NAME/CEF"
 mkdir -p "\$CACHE_ROOT"
 export BUNIUM_ROOT_CACHE_PATH="\$CACHE_ROOT"
-exec "\$APP_ROOT/MacOS/bun" "\$APP_ROOT/Resources/app/electron/main.ts" "\$@"
+exec "\$APP_ROOT/MacOS/bun" "\$APP_ROOT/Resources/app/bunium/main.ts" "\$@"
 EOF
 chmod +x "$APP_BUNDLE/Contents/MacOS/$NAME"
 
@@ -178,7 +178,7 @@ if [ "$TRIM_CEF" -eq 1 ]; then
   trim_cef_framework "$FW_RES" "$APP_BUNDLE/Contents/Frameworks" "$LOCALES"
 fi
 
-# --- Resources: the app (dist/ + electron/ + package.json) + a real (not
+# --- Resources: the app (dist/ + bunium/ + package.json) + a real (not
 # symlinked) node_modules/bunium materialized from the bunium repo so
 # "import { app } from 'bunium'" resolves inside the bundle. ---
 resource_app="$APP_BUNDLE/Contents/Resources/app"

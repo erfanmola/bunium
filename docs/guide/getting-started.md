@@ -67,7 +67,7 @@ before any window `loadURL()`s a `bunium://` URL.
 
 ## The scaffold template
 
-Scaffolded apps get an `electron/main.{ts,js}` with exactly that dev/prod branch
+Scaffolded apps get a `bunium/main.{ts,js}` with exactly that dev/prod branch
 (keyed on `NODE_ENV`), scripts for `dev` (concurrently), `build`
 (`tsc -b && vite build`), and `start`. See the template's own README comments for
 details.

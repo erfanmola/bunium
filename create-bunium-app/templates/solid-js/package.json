@@ -4,10 +4,10 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k \"vite\" \"bun run electron:dev\"",
-    "electron:dev": "bun run --watch electron/main.js",
+    "dev": "concurrently -k \"vite\" \"bun run bunium:dev\"",
+    "bunium:dev": "bun run --watch bunium/main.js",
     "build": "vite build",
-    "start": "bun run electron/main.js"
+    "start": "bun run bunium/main.js"
   },
   "dependencies": {
     "bunium": "__BUNIUM_VERSION__",

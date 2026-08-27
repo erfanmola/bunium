@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Packages a built bunium app (create-bunium-app output: electron/main.ts +
+# Packages a built bunium app (create-bunium-app output: bunium/main.ts +
 # built dist/ + a "bunium" package.json dependency) into a flat Linux
 # directory layout -- the Linux counterpart of packaging/mac/package.sh and
 # packaging/win/package.sh.
@@ -16,7 +16,7 @@
 #                       BUNIUM_SUBPROCESS_PATH/BUNIUM_FRAMEWORK_DIR/
 #                       BUNIUM_RESOURCES_DIR/BUNIUM_ROOT_CACHE_PATH (see
 #                       src/paths.ts + src/native.ts for what each governs)
-#                       then execs `bun app/electron/main.ts`
+#                       then execs `bun app/bunium/main.ts`
 #     bun               the Bun binary itself (copied from $BUN_BIN)
 #     Runtime/          bunium_shim.so + bunium_subprocess + libcef.so +
 #                       icudtl.dat + v8_context_snapshot.bin +
@@ -39,7 +39,7 @@
 #                       $ORIGIN-relative rpath (native/linux/build.sh), so
 #                       libcef.so resolves automatically from this same
 #                       dir with no LD_LIBRARY_PATH needed.
-#     app/              dist/ + electron/main.ts + package.json + a real
+#     app/              dist/ + bunium/main.ts + package.json + a real
 #                       (not symlinked) node_modules/bunium materialized
 #                       from src/ + package.json
 #
@@ -99,9 +99,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$APP_DIR" ] || { echo "missing -a <app-dir>" >&2; usage; }
-[ -d "$APP_DIR/electron" ] || { echo "error: $APP_DIR/electron missing (main-process dir)" >&2; exit 1; }
+[ -d "$APP_DIR/bunium" ] || { echo "error: $APP_DIR/bunium missing (main-process dir)" >&2; exit 1; }
 [ -d "$APP_DIR/dist" ] || { echo "error: $APP_DIR/dist missing -- run the app's build first" >&2; exit 1; }
-[ -f "$APP_DIR/electron/main.ts" ] || { echo "error: $APP_DIR/electron/main.ts missing" >&2; exit 1; }
+[ -f "$APP_DIR/bunium/main.ts" ] || { echo "error: $APP_DIR/bunium/main.ts missing" >&2; exit 1; }
 [ -n "$NAME" ] || NAME="$(basename "$APP_DIR")"
 case "$NAME" in
   *" "*) echo "error: app name must not contain spaces (launcher layout)" >&2; exit 1 ;;
@@ -170,7 +170,7 @@ if [ "$LOCALES" != "all" ]; then
   done
 fi
 
-# --- app/: the user app (dist/ + electron/ + package.json) + a real (not
+# --- app/: the user app (dist/ + bunium/ + package.json) + a real (not
 # symlinked) node_modules/bunium materialized from the bunium repo so
 # "import { app } from 'bunium'" resolves inside the package. ---
 resource_app="$PACKAGE/app"
@@ -199,7 +199,7 @@ export BUNIUM_RESOURCES_DIR="\$APP_ROOT/Runtime"
 CACHE_ROOT="\${XDG_CACHE_HOME:-\$HOME/.cache}/$NAME/CEF"
 mkdir -p "\$CACHE_ROOT"
 export BUNIUM_ROOT_CACHE_PATH="\$CACHE_ROOT"
-exec "\$APP_ROOT/bun" "\$APP_ROOT/app/electron/main.ts" "\$@"
+exec "\$APP_ROOT/bun" "\$APP_ROOT/app/bunium/main.ts" "\$@"
 EOF
 chmod +x "$PACKAGE/$NAME"
 

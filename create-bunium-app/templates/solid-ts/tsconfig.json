@@ -13,5 +13,5 @@
     "noEmit": true,
     "types": ["bun-types"]
   },
-  "include": ["src", "electron"]
+  "include": ["src", "bunium"]
 }

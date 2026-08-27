@@ -3,7 +3,7 @@
 //
 // All 6 planned combinations exist: {react,solid,vue} x {ts,js}, all on
 // Vite (per PLAN.md Phase 4). "solid-ts" was proven first end-to-end, then
-// the rest were generalized from it -- same shared shape (electron/main.ts
+// the rest were generalized from it -- same shared shape (bunium/main.ts
 // or .js branching on NODE_ENV between Vite dev server and
 // app.setAppRoot()+"bunium://app/" for prod, per-framework Vite plugin +
 // component syntax layered on top). Adding a further template later means:

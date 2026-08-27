@@ -1,7 +1,7 @@
 # Packaging
 
 Produces a distributable app for macOS, Windows, or Linux from your built app
-directory (`electron/main.ts` + your built static output — see
+directory (`bunium/main.ts` + your built static output — see
 [Minimum app shape](#minimum-app-shape)).
 
 ## macOS
@@ -46,7 +46,7 @@ applied — sign the output yourself if you need SmartScreen-clean distribution.
 
 ## Minimum app shape
 
-The `-a` app dir must contain `electron/main.ts` (or `.js`) plus the built static
+The `-a` app dir must contain `bunium/main.ts` (or `.js`) plus the built static
 output the main process serves via `app.setAppRoot()` + `loadURL("bunium://app/")`.
 A scaffolded [`create-bunium-app`](/guide/getting-started) project already has
 this shape — `bun run build` produces it.

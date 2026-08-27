@@ -83,7 +83,7 @@ export function buildRelaunchCommand(
  * Shuts down CEF, then detaches a wait-for-exit shim that re-execs the same
  * bun + script invocation the packaged launcher used. Meant to be the
  * `relaunchApp` handler passed to `updater.relaunch(relaunchApp)` from the
- * app's `electron/main.ts` on the updater's `ready` event:
+ * app's `bunium/main.ts` on the updater's `ready` event:
  *
  *     updater.on("ready", () => updater.relaunch(relaunchApp));
  *
