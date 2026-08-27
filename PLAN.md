@@ -1972,6 +1972,92 @@ pipeline produces it:
       faster process boot than Node's) benchmarks about how you'd expect.
       macOS arm64 only so far, one machine, 3 reps/scenario.
 
+## Post-Phase-11 — "beat Electron on every macOS benchmark" pass (2026-08-28)
+
+User directive: close every benchmarked gap vs Electron, macOS first
+(Linux/Windows to follow in later sessions). Full plan + research at
+`/Users/erfanmola/.claude/plans/noble-seeking-rabin.md`; full before/after
+numbers and methodology in `benchmark/RESULTS.md`'s "Round 2" section.
+Verified after every change: 37/37 `examples/*.ts`, 6/6
+`create-bunium-app` scaffolds, no regressions.
+
+- [x] **Adaptive CEF message pump.** `settings.external_message_pump = true`
+      (`bunium_shim.cpp`) + `BuniumApp::OnScheduleMessagePumpWork`
+      (`bunium_common.h`, stores the requested wake deadline in an atomic,
+      thread-safe per CEF's "may be called from any thread" contract) +
+      new `bunium_get_next_pump_delay_ms()` ABI function + `src/app.ts`'s
+      `startPumpLoop` rewritten from a fixed 8ms `setInterval` to a
+      self-rescheduling `setTimeout` sized by what CEF actually requested
+      (floor stays 8ms — see below for why it wasn't raised). Deliberately
+      NOT a native→JS async callback (bun:ffi `JSCallback` fired from an
+      arbitrary CEF thread) — that's the theoretically-zero-poll design but
+      carries real new FFI-threading risk this codebase has been burned by
+      before (`ARCHITECTURE.md` §15/§18); the bounded-polling design gets
+      most of the win with no new threading surface. **Result: IPC
+      round-trip latency 11.9ms → 2.5ms (~4.3x), still behind Electron's
+      0.2ms but no longer an order of magnitude off.**
+- [x] **Disabled Chromium's spare-renderer-process feature**
+      (`--disable-features=SpareRendererForSitePerProcess` in
+      `OnBeforeCommandLineProcessing`, merged with whatever
+      `disable-features` CEF already set rather than clobbering it — verified
+      via `ps` that the merge actually worked). A bunium window's one
+      navigation is known at creation time; there's no "next tab" to
+      pre-warm a spare renderer for. Found by directly diffing bunium's vs
+      Electron's real process trees via `ps` (not guessing) — Electron's own
+      renderer already disables this feature. **Result: process count 6→5,
+      now matches Electron exactly; minimal-app idle RSS flipped to beat
+      Electron for the first time (403MB vs 418MB); mini-app RSS gap closed
+      ~80% (-81MB → -16.5MB).**
+- [x] **Investigated and ruled out, with evidence, two dead ends** (worth
+      recording so they aren't re-investigated blind next time): (1)
+      "mirror Electron's default Chromium switches" — dumped Electron 44's
+      actual renderer/gpu/utility command lines via `ps`, they're nearly
+      identical to bunium's aside from Chromium-internal defaults neither
+      app sets explicitly; Electron doesn't disable background services by
+      default either, so there was no switches-based lever to copy. (2) "CEF
+      chrome_runtime full-browser overhead" — a contaminated shared CEF
+      profile (this session killed a lot of test processes hard, leaving
+      unclean-shutdown state) once showed bunium loading
+      `chrome://new-tab-page` + initializing a UKM database/top-sites/
+      segmentation-platform on startup, which looked like a smoking gun;
+      re-verified against a clean profile and confirmed it was
+      session-restore after the unclean shutdown, not baseline behavior.
+- [ ] **Idle CPU (~55-57% of one core, unchanged) — real root cause found,
+      not yet fixed.** Isolated `bunium_do_message_loop_work()` and
+      `bunium_pump_native_events()` in a standalone FFI harness and measured
+      actual CPU-time deltas (not `ps`'s noisy lifetime-average `%CPU`):
+      neither call alone costs anything at any interval tested; both
+      together cost 25-55% of one core with **no clean reproducible
+      relationship to poll interval** (8-40ms all tested, results noisy
+      run-to-run at the same interval) — meaning the adaptive pump loop
+      above cannot fix this, because the cost isn't coming from how often
+      bunium polls. Most consistent explanation: CEF's windowless-OSR
+      compositor runs a continuous, `windowless_frame_rate`-paced (fixed at
+      60fps, `bunium_shim.cpp`) internal repaint/BeginFrame cycle regardless
+      of whether page content changed, and the pump loop merely services
+      that ongoing work. **Real next step, not attempted this pass:**
+      determine whether CEF's windowless OSR can be made invalidate-driven
+      instead of continuously repainting at a fixed rate, or whether
+      `windowless_frame_rate` can be dynamically lowered while idle. Likely
+      needs CEF-source-level investigation, not just a settings flag.
+- [ ] **Startup time (~300-330ms vs Electron's ~160-200ms, unchanged) — no
+      bunium-specific inefficiency found.** Every window-creation FFI call
+      is a single synchronous native call with no extra IPC round trips;
+      the cost is `CefInitialize()` itself (loading the ~300MB CEF
+      framework dylib + spawning its subprocess tree) versus Electron's
+      single precompiled executable. Not attempted this pass — would need
+      either overlapping CEF init with other app startup work (not
+      applicable to a do-nothing benchmark) or a different packaging
+      approach.
+- **Scope note:** this pass was macOS-only per the user's own request
+  (Linux/Windows to be run by the user separately). The two shipped native
+  changes live in `native/mac/bunium_shim.cpp` / `bunium_common.h`, which
+  compile unchanged into the Linux/Windows builds too (per
+  `native/linux/build.sh`/`native/win/build.sh`) — so those platforms
+  should inherit at least the IPC-latency and process-count wins once
+  rebuilt there, but this was **not verified** on Linux/Windows this
+  session.
+
 ---
 
 **Naming:** `bunium`, confirmed by user.
