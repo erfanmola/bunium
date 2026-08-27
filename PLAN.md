@@ -2022,35 +2022,68 @@ Verified after every change: 37/37 `examples/*.ts`, 6/6
       segmentation-platform on startup, which looked like a smoking gun;
       re-verified against a clean profile and confirmed it was
       session-restore after the unclean shutdown, not baseline behavior.
-- [ ] **Idle CPU (~55-57% of one core, unchanged) — real root cause found,
-      not yet fixed.** Isolated `bunium_do_message_loop_work()` and
-      `bunium_pump_native_events()` in a standalone FFI harness and measured
-      actual CPU-time deltas (not `ps`'s noisy lifetime-average `%CPU`):
-      neither call alone costs anything at any interval tested; both
-      together cost 25-55% of one core with **no clean reproducible
-      relationship to poll interval** (8-40ms all tested, results noisy
-      run-to-run at the same interval) — meaning the adaptive pump loop
-      above cannot fix this, because the cost isn't coming from how often
-      bunium polls. Most consistent explanation: CEF's windowless-OSR
-      compositor runs a continuous, `windowless_frame_rate`-paced (fixed at
-      60fps, `bunium_shim.cpp`) internal repaint/BeginFrame cycle regardless
-      of whether page content changed, and the pump loop merely services
-      that ongoing work. **Real next step, not attempted this pass:**
-      determine whether CEF's windowless OSR can be made invalidate-driven
-      instead of continuously repainting at a fixed rate, or whether
-      `windowless_frame_rate` can be dynamically lowered while idle. Likely
-      needs CEF-source-level investigation, not just a settings flag.
+- [x] **Round 2 (same day): user pushback — "beat Electron in all, not
+      tie."** Went back in for process count specifically (was tied 5=5,
+      not beaten) and idle CPU. Two more real, shipped, verified changes:
+      **merged Chromium's GPU service into the browser process**
+      (`--in-process-gpu` — GPU compositing was already disabled for the
+      CPU-readback OSR path, so the isolated GPU process was pure overhead
+      with no remaining security benefit; tested `--single-process` too,
+      which also works and drops to 1 process, but rejected as unsafe
+      since it merges the *renderer*, Chromium's real security boundary
+      against untrusted content `<bunium-webview>` can load). **Result:
+      process count 5→4, genuinely below Electron's 5** (not tied), and
+      RSS followed on both app shapes: minimal-app RSS 403→365MB (beats
+      Electron's 418MB by ~13%), mini-app RSS 467→430MB (newly beats
+      Electron's 451MB — a whole extra OS process is real memory). 5 of 8
+      benchmarked metrics now beaten outright: disk size, Bun-vs-Node
+      boot, process count, and idle RSS on both app shapes.
+- [ ] **Idle CPU (~55-59% of one core, unchanged) — root cause narrowed
+      further, still not fixed. Includes a real measurement mistake, made
+      and corrected within this session.** Isolated
+      `bunium_do_message_loop_work()`/`bunium_pump_native_events()` in a
+      standalone FFI harness: neither costs anything alone at any interval;
+      both together cost 25-59% with no clean relationship to poll
+      interval — rules out the adaptive pump loop as a CPU fix (it fixed
+      IPC latency, not this). Tried `windowless_frame_rate = 1`: no
+      measurable change, ruling out OSR frame-rate as the direct driver
+      too. **Then found `--no-proxy-server` (disabling Chromium's macOS
+      system-proxy-config watcher) apparently cut CPU 55%→33%, shipped
+      it** — then caught the mistake: extending the CPU-timeline
+      measurement to 1-30s (1s resolution) revealed idle CPU is near-zero
+      for ~3-4s after launch, then jumps to a sustained ~55-59% that never
+      drops — the "win" was sampling entirely inside that pre-onset
+      window. Re-measured against the real steady state:
+      `--no-proxy-server` made no difference. **Reverted** — no longer
+      worth its real downside (breaks proxy/VPN-aware networking for every
+      bunium app) once the benefit turned out not to exist. `sample`(1)-
+      profiled the true steady state: cost sits inside Chromium Embedded
+      Framework, spread across many `ThreadPoolForegroundWorker` threads
+      (not one dedicated thread) — consistent with Chromium's
+      `BEST_EFFORT`-priority background task scheduling, which by design
+      defers non-critical work a few seconds past startup, matching the
+      observed onset closely. Tried disabling Safe Browsing
+      auto-update/phishing-detection, crash reporter/breakpad, the stack
+      sampling profiler, and desktop-PWA/shortcut OS-integration features
+      — none moved the steady-state number. **Real next step, not
+      attempted:** identifying the exact deferred task needs a
+      symbolized/debug CEF build (the vendored distro is stripped —
+      `sample` resolves to the nearest exported symbol, not the true call
+      site) or Chromium source-level work. Full timeline data and the
+      measurement-mistake writeup in `benchmark/RESULTS.md`.
 - [ ] **Startup time (~300-330ms vs Electron's ~160-200ms, unchanged) — no
-      bunium-specific inefficiency found.** Every window-creation FFI call
-      is a single synchronous native call with no extra IPC round trips;
-      the cost is `CefInitialize()` itself (loading the ~300MB CEF
-      framework dylib + spawning its subprocess tree) versus Electron's
-      single precompiled executable. Not attempted this pass — would need
-      either overlapping CEF init with other app startup work (not
-      applicable to a do-nothing benchmark) or a different packaging
-      approach.
+      bunium-specific inefficiency found, investigated twice.** Every
+      window-creation FFI call is a single synchronous native call with no
+      extra IPC round trips. Profiled the 0-1s startup window specifically
+      (separate from the idle-CPU steady-state profiling above) and
+      confirmed the two costs are unrelated — startup-window activity is
+      dominated by waiting/blocked threads, not the same BEST_EFFORT
+      pattern seen later. The ~300ms is `CefInitialize()` itself loading
+      the CEF framework and spawning its (now smaller, 4-process)
+      subprocess tree, versus Electron's single precompiled executable. No
+      lever found in either investigation pass.
 - **Scope note:** this pass was macOS-only per the user's own request
-  (Linux/Windows to be run by the user separately). The two shipped native
+  (Linux/Windows to be run by the user separately). The shipped native
   changes live in `native/mac/bunium_shim.cpp` / `bunium_common.h`, which
   compile unchanged into the Linux/Windows builds too (per
   `native/linux/build.sh`/`native/win/build.sh`) — so those platforms

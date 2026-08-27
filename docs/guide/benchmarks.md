@@ -1,11 +1,13 @@
 # bunium vs Electron benchmarks
 
 Measured on one machine (Apple M2 Pro, macOS, arm64), bun 1.4.0 vs Electron
-44.0.0, 3 repetitions per scenario (median reported). Full methodology, raw
+44.0.0, 5 repetitions per scenario (median reported). Full methodology, raw
 per-rep data, and the harness itself live in
 [`benchmark/`](https://github.com/erfanmola/bunium/tree/main/benchmark)
 (see `benchmark/RESULTS.md` for the unabridged version of this page,
-including a full round of targeted perf work aimed at closing every gap).
+including a full round of targeted perf work aimed at closing every gap
+— and a real measurement mistake that was caught and corrected before it
+shipped wrong).
 
 Two comparable app pairs, same UI on both sides:
 
@@ -14,73 +16,91 @@ Two comparable app pairs, same UI on both sides:
   counter); `benchmark/shared/{index.html,app.js}` is the literal same file
   loaded by both hosts.
 
-## Results (after a targeted macOS perf pass)
+## Results
 
-| metric | bunium-minimal | electron-minimal | bunium-mini-app | electron-mini-app |
-|---|---|---|---|---|
-| process start → first paint (ms) | 305 | 163 | 327 | 203 |
-| idle RSS, full process tree (MB) | **403.0** | 418.1 | 467.3 | 450.9 |
-| idle CPU, full process tree (%) | 55.0 | 0 | 57.0 | 0 |
-| process count (main + helpers) | **5** | 5 | **5** | 5 |
-| mini-app DOM render, 200 rows (ms) | — | — | 1.0 | 1.0 |
-| IPC round trip, avg of 50 (ms) | — | — | 2.5 | 0.2 |
+| metric | bunium | Electron | winner |
+|---|---|---|---|
+| framework/runtime on-disk size | 260M | 306M | **bunium** |
+| process boot (bare `-e "exit(0)"`) | 6.3ms (bun) | 36.6ms (node) | **bunium** |
+| process count (main + helpers) | **4** | 5 | **bunium** |
+| idle RSS, minimal app (MB) | **365.4** | 418.5 | **bunium** |
+| idle RSS, mini-app (MB) | **429.6** | 450.9 | **bunium** |
+| process start → first paint (ms) | 300-331 | 160-195 | Electron |
+| idle CPU, full process tree (%) | 59 | **0** | Electron |
+| IPC round trip, avg of 50 (ms) | 1.3-3.2 | 0.2-0.5 | Electron |
+| mini-app DOM render, 200 rows (ms) | 0.9 | 1.0 | ~tied |
 
-| | size on disk |
-|---|---|
-| bunium (trimmed CEF + shim) | 260M |
-| Electron 44 runtime | 306M |
+**5 of 8 metrics beaten outright, not tied:** disk size, process boot,
+process count, and idle RSS on both app shapes. **3 remain behind**,
+each root-caused with real (if inconclusive) investigation — see below.
 
-| | process boot, bare `-e "process.exit(0)"` (median) |
-|---|---|
-| bun 1.4.0 | 6.3ms |
-| node v26.7.0 | 36.6ms |
+## What actually closed the gap
 
-**Beaten or matched:** on-disk framework size, Bun-vs-Node process boot,
-process count (now tied 5=5), minimal-app idle RSS (403MB vs 418MB — first
-resource metric bunium wins outright). **Substantially closed:** IPC
-latency (~4.3x faster than the original baseline), mini-app idle RSS (gap
-cut by ~80%). **Still behind, root-caused, not a quick fix:** idle CPU,
-startup time — see below.
+Three native changes: an adaptive CEF message pump (`external_message_pump`
++ `OnScheduleMessagePumpWork` replacing a fixed 8ms `setInterval`) cut IPC
+latency ~4-9x; disabling Chromium's spare-renderer-process feature (bunium
+already knows its one navigation at window-creation time — no "next tab"
+to pre-warm for); and merging Chromium's GPU service into the browser
+process (`--in-process-gpu` — GPU compositing was already off for the
+CPU-readback OSR path, so the isolated GPU process was pure overhead).
+The last two together dropped process count from 6 to 4 — genuinely below
+Electron's 5, not matching it — and RSS on both app shapes followed,
+flipping to a bunium win.
 
-## What moved, and why
+Deliberately **not** shipped: `--single-process` (tested working, drops to
+a single OS process, but also merges the *renderer* — Chromium's actual
+security boundary against untrusted content `<bunium-webview>` can load.
+Rejected as unsafe for a general-purpose framework regardless of the
+benchmark win.)
 
-Two native changes: (1) an adaptive CEF message pump
-(`external_message_pump` + `OnScheduleMessagePumpWork`, replacing a fixed
-8ms `setInterval`) cut IPC round-trip latency ~4.3x by only waking as often
-as CEF actually has work; (2) disabling Chromium's spare-renderer-process
-feature (bunium's window creation already knows its one navigation up
-front — there's no "next tab" to pre-warm a spare renderer for) dropped
-process count from 6 to 5, matching Electron, and RSS followed.
+## Idle CPU: a real measurement mistake, caught and reverted
 
-**Idle CPU didn't move**, and that turned out to be the real finding: a
-standalone FFI harness isolating the two native pump calls showed the CPU
-cost isn't primarily driven by *how often* bunium polls — moving the poll
-interval around 8-40ms produced no clean, reproducible cost curve. That
-points to CEF's own windowless-OSR compositor running a continuous,
-frame-rate-paced internal repaint cycle regardless of whether page content
-actually changed; the message pump merely services that cost, it doesn't
-cause it. Closing this gap needs investigating whether CEF's windowless
-OSR path can become invalidate-driven instead of continuously repainting —
-a bigger, separate piece of work, logged in `PLAN.md`.
+Worth telling honestly rather than glossing over. An initial fix
+(`--no-proxy-server`, disabling Chromium's macOS system-proxy-config
+watcher) looked like a real 55%→33% win when measured 2-5 seconds after
+launch, and shipped. Extending the measurement window (1-30 seconds, 1s
+resolution) revealed the actual pattern: idle CPU is near-zero for the
+first ~3-4 seconds, then jumps to a sustained ~55-59% that never comes
+back down. The "win" was sampling entirely within that pre-onset window —
+re-measured against the real steady state and the proxy fix made no
+difference. It was **reverted**, since it no longer had a benefit to
+justify its real downside (bypassing proxy/VPN-aware networking for every
+bunium app).
 
-**Startup time didn't move either** — no bunium-specific inefficiency was
-found in the window-creation path (each FFI call is a single synchronous
-native call, no extra round trips). The ~300ms is dominated by
-`CefInitialize()` loading the ~300MB CEF framework and spawning its
-subprocess tree, versus Electron's single precompiled executable. Also
-logged as a follow-up.
+The actual cost profiles to something inside Chromium Embedded Framework
+itself, spread across many background thread-pool workers rather than one
+dedicated thread — consistent with Chromium's own `BEST_EFFORT`-priority
+task scheduling, which deliberately defers non-critical background work
+for a few seconds after startup so it doesn't compete with the initial
+page load (matching the observed onset almost exactly). Several plausible
+feature-disabling switches were tested (Safe Browsing, crash reporting,
+sampling profiler, desktop-PWA OS integration) with no effect. Pinning
+down the exact task needs a symbolized/debug CEF build or Chromium
+source-level work — out of reach this pass.
+
+## Startup time: investigated, no lever found
+
+No bunium-specific inefficiency in the window-creation path (each FFI call
+is a single synchronous native call, no extra round trips). Profiling the
+0-1s startup window confirmed it's unrelated to the idle-CPU issue above —
+different cost, different cause. The ~300ms is attributed to
+`CefInitialize()` itself loading the CEF framework and spawning its
+subprocess tree, versus Electron's single precompiled executable.
 
 ## Caveats
 
-One machine, one run per round — enough to trust order-of-magnitude
-signals (CPU, IPC, the RSS flip) but not to trust startup/RSS to much
-better than ~10-20% precision. macOS arm64 only; the two shipped native
-changes live in shared code compiled unchanged into the Linux/Windows
-builds too, so those platforms should inherit at least the IPC-latency and
-process-count wins once rebuilt there, but this wasn't verified on those
-platforms this pass. The Electron mini-app uses `nodeIntegration: true,
-contextIsolation: false` for an IPC-shape comparable to bunium's single-hop
-channel — a production Electron app would add a `contextBridge` preload
-hop with its own small overhead this doesn't capture. Bundle size compares
-the raw framework/runtime payload, not a fully packaged+signed installer
-for both sides.
+Repeated rounds of 3-5 reps on one machine — enough to trust
+order-of-magnitude signals and the RSS/process-count flips (structural,
+not timing-noise-prone), but startup time is only accurate to ~10-20%. The
+idle-CPU episode above is a concrete demonstration of why short sampling
+windows on this metric are untrustworthy specifically — always sample past
+any possible delayed-onset behavior. macOS arm64 only; the shipped native
+changes live in shared code compiled into the Linux/Windows builds too, so
+those platforms should inherit the process-count/RSS/IPC-latency wins once
+rebuilt there, but this wasn't verified on those platforms. The Electron
+mini-app uses `nodeIntegration: true, contextIsolation: false` for an
+IPC-shape comparable to bunium's single-hop channel — a production
+Electron app would add a `contextBridge` preload hop with its own small
+overhead this doesn't capture. Bundle size compares the raw
+framework/runtime payload, not a fully packaged+signed installer for
+either side.
