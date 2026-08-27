@@ -101,7 +101,7 @@ jobs:
           ls -la crash-reports || true
 
       - name: Package fixture app + verify packaged run
-        timeout-minutes: 8
+        timeout-minutes: 4
         env:
           # Same GPU-less-runner fix as the smoke step above -- the packaged
           # launcher execs bun directly and inherits this env, but doesn't
@@ -111,7 +111,27 @@ jobs:
           bash packaging/mac/package.sh \
             -a packaging/mac/fixture-app -n BuniumFixture \
             -i com.bunium.fixture -o dist-app 2>&1 | tee pack.log
-          ./dist-app/BuniumFixture.app/Contents/MacOS/BuniumFixture 2>&1 | tee pack-verify.log
+
+          # The verify binary can hang on shutdown after already printing
+          # its PASS/FAIL verdict -- the same CI-VM-only CEF background
+          # CHECK class the lldb-instrumented smoke step above root-caused
+          # (real macOS hardware doesn't reproduce it). Poll for the verdict
+          # marker instead of waiting on the process to exit on its own, so
+          # a post-verdict hang can't stall the job for the full timeout.
+          ./dist-app/BuniumFixture.app/Contents/MacOS/BuniumFixture > pack-verify.log 2>&1 &
+          app_pid=$!
+          deadline=$((SECONDS + 60))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            grep -qE "PACKAGED_APP_VERIFY:(PASS|FAIL)" pack-verify.log && break
+            kill -0 "$app_pid" 2>/dev/null || break
+            sleep 1
+          done
+          kill -TERM "$app_pid" 2>/dev/null || true
+          sleep 1
+          kill -KILL "$app_pid" 2>/dev/null || true
+          pkill -KILL -f "BuniumFixture" 2>/dev/null || true
+
+          cat pack-verify.log
           grep -q "PACKAGED_APP_VERIFY:PASS" pack-verify.log
 
       - name: Upload logs
