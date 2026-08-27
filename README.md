@@ -45,12 +45,11 @@ vtable structs — see [ARCHITECTURE.md](ARCHITECTURE.md)).
 
 ## Status
 
-All 11 planned phases are implemented and verified — window/paint, IPC, webview,
-Vite dev + prod scheme, native system features, packaging/codesigning, auto-update,
-CEF resource trim, and per-platform npm packages. See [PLAN.md](PLAN.md) for the full
-phase-by-phase log and [ARCHITECTURE.md](ARCHITECTURE.md) for the load-bearing
-technical decisions behind each one. npm publish is the only thing left before v0.0.1
-is generally installable — see [Publishing](docs/guide/publishing.md).
+Window/paint, typed IPC, `<bunium-webview>`, Vite dev + prod scheme, native system
+features, packaging/codesigning, auto-update, CEF resource trim, and per-platform npm
+packages are all implemented and verified on macOS, Linux, and Windows. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for the load-bearing technical decisions behind
+each one, and [Publishing](docs/guide/publishing.md) for the release pipeline.
 
 ## Quickstart
 

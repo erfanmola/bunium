@@ -97,5 +97,5 @@ app.setAppRoot("/abs/path/to/dist"); // once, before any bunium:// loadURL
 app.shutdown();                      // clean exit; also before relaunch
 ```
 
-(Phase 9's `relaunchApp()` calls `app.shutdown()` internally — see
+(`relaunchApp()` calls `app.shutdown()` internally — see
 [Auto-update](/guide/updates).)

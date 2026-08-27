@@ -32,12 +32,11 @@ features:
 
 ## Status
 
-All 11 planned phases are implemented and verified across **macOS, Linux, and
-Windows**: window/paint, typed IPC, `<bunium-webview>`, Vite dev + `bunium://` prod,
-native system features (menu/tray/notifications/dialogs), packaging + codesigning,
-auto-update, CEF resource trim, and per-platform npm packages. npm publish is the
-only remaining step before `v0.0.1` is generally installable — see
-[Publishing](/guide/publishing).
+Window/paint, typed IPC, `<bunium-webview>`, Vite dev + `bunium://` prod, native
+system features (menu/tray/notifications/dialogs), packaging + codesigning,
+auto-update, CEF resource trim, and per-platform npm packages are all implemented
+and verified across **macOS, Linux, and Windows** — see
+[Publishing](/guide/publishing) for the release pipeline.
 
 Desktop-interactive behavior (real mouse drags, tray clicks, notification banners) is
 verified by plumbing tests only — it needs a real desktop session to confirm visually.

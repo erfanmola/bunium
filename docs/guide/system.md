@@ -1,6 +1,6 @@
 # System features
 
-Phase 5's `src/system/` package: native macOS features each wrapped as a thin
+`src/system/` package: native OS features each wrapped as a thin
 typed class over a flat C ABI — no single "system" god object; each slice
 (menu, tray, notification, dialog) is independent, and they share one
 `SystemEventBus` drained by the app pump.

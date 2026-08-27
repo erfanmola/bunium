@@ -1,8 +1,7 @@
 # Packaging
 
-Phase 8 — macOS and Windows packaging, implemented and verified. Linux
-(Phase 6) packaging is also implemented and verified: a flat runnable
-directory plus real `.deb`/`.rpm`/AppImage distribution formats.
+macOS, Windows, and Linux packaging, all implemented and verified: a flat runnable
+directory plus real `.deb`/`.rpm`/AppImage distribution formats on Linux.
 
 ## Usage
 

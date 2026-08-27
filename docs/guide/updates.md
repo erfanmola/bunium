@@ -1,6 +1,6 @@
 # Auto-update
 
-Phase 9 — bsdiff-based updater with a deliberate app-layer / CEF-layer split: the
+A bsdiff-based updater with a deliberate app-layer / CEF-layer split: the
 CEF distribution is huge (~130MB compressed per platform and nearly never changes),
 so the updater never treats a release as one monolithic blob. Small app-code
 patches ship as binary deltas; a rare CEF bump ships as a whole-file replace.

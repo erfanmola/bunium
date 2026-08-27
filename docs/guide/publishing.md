@@ -1,10 +1,8 @@
 # Publishing
 
-Phase 11 — the npm package and docs. This site is the docs half. The
-runtime-resolution and artifact-staging halves are implemented and verified
-locally (2026-08-18); actually publishing still needs a couple of decisions
-
-- credentials, listed at the bottom.
+The npm package and docs. This site is the docs half; the runtime-resolution and
+artifact-staging halves are implemented and verified, and the packages are published
+to npm.
 
 ## How a published package finds its native bits
 

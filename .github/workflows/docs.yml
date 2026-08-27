@@ -22,6 +22,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      pages-ready: ${{ steps.pages.outcome == 'success' }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -39,6 +41,15 @@ jobs:
         if: steps.pages.outcome == 'success'
         with:
           path: docs/.vitepress/dist
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.pages-ready == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy
-        if: steps.pages.outcome == 'success'
+        id: deployment
         uses: actions/deploy-pages@v4

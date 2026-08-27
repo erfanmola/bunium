@@ -1,6 +1,6 @@
 # `<bunium-webview>` tag
 
-The Phase 2 headline feature: embed another page as a real DOM element, composited
+Embed another page as a real DOM element, composited
 as a native `CAMetalLayer` sublayer — not a windowed child view (that's what makes
 Electron's own `<webview>` janky).
 

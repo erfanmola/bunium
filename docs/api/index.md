@@ -13,7 +13,7 @@ below is what `src/index.ts` re-exports — the full public surface. Run
 | `BuniumWindowOptions` | Constructor options type.                                                                                                              |
 | `BuniumMessageMap`    | `Record<string, any>` base; override with your own interface for typed IPC. See [Typed IPC](/guide/ipc).                               |
 
-## System (Phase 5)
+## System
 
 | Export                                                 | Notes                                                                                                                                                                                                                                          |
 | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -26,7 +26,7 @@ below is what `src/index.ts` re-exports — the full public surface. Run
 
 See [System features](/guide/system).
 
-## Updates (Phase 9)
+## Updates
 
 | Export                                | Notes                                                                                                                                                                                                                                                                 |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
