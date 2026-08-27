@@ -1,8 +1,10 @@
 # `<bunium-webview>` tag
 
-Embed another page as a real DOM element, composited
-as a native `CAMetalLayer` sublayer — not a windowed child view (that's what makes
-Electron's own `<webview>` janky).
+Embed another page as a real DOM element, composited as a native sublayer — not a
+windowed child view (that's what makes Electron's own `<webview>` janky). The
+compositing primitive is per-platform (`CAMetalLayer` on macOS, an X11 pixmap
+sublayer on Linux, a GDI-blitted child region on Windows); the DOM-facing API is
+identical everywhere.
 
 ## Usage
 
@@ -25,7 +27,7 @@ that provides `window.__bunium.*`.
 ## What works
 
 - **Sublayer compositing** — two independent CEF views (separate renderer
-  processes) paint as sibling `CAMetalLayer`s in one window.
+  processes) paint as sibling native sublayers in one window.
 - **Independent hit-testing** — a click inside the webview's rect routes to the
   embedded page only; outside routes to the outer page. Verified with synthetic
   clicks + per-view pixel readback (`examples/webview-hit-test.ts`).

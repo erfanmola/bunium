@@ -21,7 +21,7 @@ features:
   - title: Typed IPC
     details: One generic transport, discriminated-union message maps checked on both sides at compile time.
   - title: DOM <bunium-webview>
-    details: A real custom element that composites as a native CAMetalLayer sublayer — clipped, z-ordered, hit-testable.
+    details: A real custom element that composites as a native sublayer — clipped, z-ordered, hit-testable.
   - title: Vite dev + bunium:// prod
     details: Point loadURL at the dev server for HMR in dev; serve built output over a custom scheme in prod.
   - title: System features

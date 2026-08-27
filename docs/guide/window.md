@@ -1,7 +1,8 @@
 # Window
 
 `BuniumWindow` is the main-process handle to one native window + one CEF view,
-painted into a `CAMetalLayer`. Typed per the standing requirement — every option,
+painted into a native layer (`CAMetalLayer` on macOS, an X11 pixmap on Linux, a
+GDI-backed surface on Windows). Typed per the standing requirement — every option,
 getter, and event is exported.
 
 ```ts

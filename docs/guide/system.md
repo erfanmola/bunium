@@ -29,8 +29,14 @@ menu.setAsApplicationMenu(); // replaces the app menu bar
 ```
 
 `MenuItemSpec` is a flat union: `{ type: "separator" }` or
-`{ label, id?, submenu? }` — nested `submenu` arrays build `NSMenu` hierarchy;
-numeric `id`s map clicks back to your code.
+`{ label, id?, submenu? }` — nested `submenu` arrays build a native submenu
+hierarchy; numeric `id`s map clicks back to your code.
+
+`setAsApplicationMenu()` behavior differs per platform: on **macOS** it's a single
+app-wide menu bar (`NSApp.mainMenu`); on **Windows** it's attached per-window
+(`SetMenu`, one `HMENU` per framed window); on **Linux** there's no cross-desktop
+"global app menu" convention, so it's an honest no-op — use `tray.setMenu()`
+instead for a real menu (rendered via the tray icon's own dbusmenu).
 
 ## Tray
 
@@ -38,12 +44,16 @@ numeric `id`s map clicks back to your code.
 const tray = new Tray({ title: "Bunium" });
 tray.setMenu(menu);   // context menu; supersedes onClick
 tray.onClick((id) => {}); // menu-less click
-tray.setIcon("/abs/path/icon.png", { template: true }); // file-based, Electron-compatible
-tray.setSymbol("waveform.path.ecg"); // SF Symbol, asset-free
+tray.setIcon("/abs/path/icon.png", { template: true }); // file-based
+tray.setSymbol("waveform.path.ecg"); // named-icon shorthand
 ```
 
-Template images adapt to menu-bar appearance automatically. Text-only title is a
-deliberate v1 simplification.
+`setIcon`/`setSymbol` support differs per platform: **macOS** supports both
+(`setIcon` is file-based with template-image dark/light auto-adapt; `setSymbol`
+takes an SF Symbol name); **Windows** supports `setIcon` (any image file, alpha
+preserved via GDI+) but `setSymbol` is a no-op; **Linux** is the reverse —
+`setSymbol` takes a freedesktop icon-theme name and works, `setIcon` is currently
+a no-op. Text-only title is a deliberate v1 simplification.
 
 ## Notifications
 
@@ -53,11 +63,13 @@ notif.show();
 notif.onClick(() => {});
 ```
 
-Backend is chosen by bundle presence: `UNUserNotificationCenter` for
-bundled/packaged apps, `NSUserNotification` fallback for unbundled dev binaries
-(referencing UN from an unbundled process throws
-`NSInternalInconsistencyException`). Clicks from either path arrive as
-`bunium-notification-click {id}` events.
+Backend is native per platform: **macOS** uses `UNUserNotificationCenter` for
+bundled/packaged apps and falls back to the deprecated `NSUserNotification` for
+unbundled dev binaries (referencing UN from an unbundled process throws
+`NSInternalInconsistencyException`); **Linux** talks to the
+`org.freedesktop.Notifications` D-Bus service directly; **Windows** uses a hidden
+tray-icon balloon (`Shell_NotifyIcon`) rather than the modern toast API. Clicks
+from any path arrive as `bunium-notification-click {id}` events.
 
 ## Dialogs
 
