@@ -1,8 +1,11 @@
 # Windows build + run guide
 
-Status: **multi-process CEF window works on Windows** (2026-08-20). The port
-lives in `native/win/` and shares `native/mac/` sources (shim, subprocess,
-bsdiff bridge) compiled by clang-cl.
+> Maintainer reference for building bunium's own native Windows layer from
+> source — not needed to use `bunium` in an app (`bun add bunium` just works on
+> Windows). This is for contributing to bunium itself.
+
+The native Windows port lives in `native/win/` and shares `native/mac/` sources
+(shim, subprocess, bsdiff bridge) compiled by clang-cl.
 
 ## Toolchain
 

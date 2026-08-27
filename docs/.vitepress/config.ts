@@ -29,15 +29,20 @@ export default defineConfig({
           { text: "<bunium-webview> tag", link: "/guide/webview" },
           { text: "System features", link: "/guide/system" },
           { text: "Packaging", link: "/guide/packaging" },
-          { text: "Windows", link: "/guide/windows" },
-          { text: "Dev from macOS", link: "/guide/dev-from-mac" },
           { text: "Auto-update", link: "/guide/updates" },
-          { text: "Publishing", link: "/guide/publishing" },
         ],
       },
       {
         text: "API reference",
         items: [{ text: "Exports", link: "/api/" }],
+      },
+      {
+        text: "Contributing",
+        items: [
+          { text: "Building bunium on Windows", link: "/guide/windows" },
+          { text: "Dev from macOS", link: "/guide/dev-from-mac" },
+          { text: "Publishing", link: "/guide/publishing" },
+        ],
       },
     ],
     // Trim archive is dark-mode friendly; leave the default theme alone.

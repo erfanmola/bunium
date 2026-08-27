@@ -1,8 +1,10 @@
 # Publishing
 
-The npm package and docs. This site is the docs half; the runtime-resolution and
-artifact-staging halves are implemented and verified, and the packages are published
-to npm.
+> Maintainer reference for bunium's own release pipeline — not needed to build or
+> ship an app made with bunium. See [Packaging](/guide/packaging) for that.
+
+How `bunium`, its three platform packages, and `create-bunium-app` get built and
+published to npm.
 
 ## How a published package finds its native bits
 

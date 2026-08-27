@@ -78,19 +78,22 @@ win.onClose(() => app.shutdown());
 
 ## Docs
 
+Full site: **[erfanmola.github.io/bunium](https://erfanmola.github.io/bunium/)**
+
 - [Getting started](docs/guide/getting-started.md)
 - [Window](docs/guide/window.md) · [Typed IPC](docs/guide/ipc.md) ·
   [`<bunium-webview>`](docs/guide/webview.md) · [System features](docs/guide/system.md)
-- [Packaging](docs/guide/packaging.md) · [Auto-update](docs/guide/updates.md) ·
-  [Publishing](docs/guide/publishing.md)
-- [Windows](docs/guide/windows.md) · [Dev from macOS](docs/guide/dev-from-mac.md)
+- [Packaging](docs/guide/packaging.md) · [Auto-update](docs/guide/updates.md)
 - [API reference](docs/api/index.md)
 
 ## Contributing
 
 This is an active solo project; issues and PRs are welcome but expect the API surface
 to keep moving pre-1.0. See [ARCHITECTURE.md](ARCHITECTURE.md) before touching native
-code — several approaches were deliberately tried and rejected there.
+code — several approaches were deliberately tried and rejected there. Building
+bunium's own native layer (not needed to just use `bunium`): [Windows build
+guide](docs/guide/windows.md), [Dev from macOS](docs/guide/dev-from-mac.md),
+[Publishing](docs/guide/publishing.md).
 
 ## License
 

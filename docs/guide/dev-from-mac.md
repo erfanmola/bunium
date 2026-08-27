@@ -1,5 +1,8 @@
 # Developing the Windows port from macOS
 
+> Maintainer reference for contributing to bunium's own Windows native layer
+> from a Mac — not needed to use `bunium` in an app.
+
 Windows CEF can't run on macOS directly — and there's no Docker escape hatch:
 Docker Desktop on macOS only runs Linux containers, and MS Windows containers
 only ever run on Windows hosts. Apple-silicon `Parallels`/`UTM` Windows-on-ARM

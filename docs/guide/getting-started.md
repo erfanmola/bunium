@@ -1,37 +1,30 @@
 # Getting started
 
 bunium is an Electron-like framework: Bun drives a main process, and every window
-is rendered by CEF (Chromium Embedded Framework) painted into a native
-`CAMetalLayer` — not a WebView. Pages get real Chromium behavior, `prefers-color-scheme`
-included.
+is rendered by CEF (Chromium Embedded Framework) painted into a native layer — not
+a system WebView. Pages get real Chromium behavior, `prefers-color-scheme` included.
 
-Requires macOS on Apple Silicon and [Bun](https://bun.sh) ≥ 1.x. The native shim,
-CEF framework, and Bun are resolved at runtime from explicit paths — see [Packaging]
-(/guide/packaging) for how a packaged app pins its own copies.
+Requires [Bun](https://bun.sh) ≥ 1.x, on macOS, Linux, or Windows. The right native
+CEF binaries for your platform install automatically as part of `bunium` — nothing
+to build yourself.
 
-## Install
-
-There is no published npm package yet (see [Publishing](/guide/publishing)). Development
-consumes `bunium` directly from this repo — either via a `file:` dependency:
-
-```json
-{
-  "dependencies": {
-    "bunium": "file:../bunium"
-  }
-}
-```
-
-or, inside this repo, by importing the source directly. The fast path is the
-scaffolder:
+## Quickstart
 
 ```sh
 bunx --bun create-bunium-app my-app --template=solid-ts
+cd my-app
+bun install
+bun dev
 ```
 
-`create-bunium-app` offers `react-ts`, `react-js`, `solid-ts`, `solid-js`,
-`vue-ts`, and `vue-js` templates, all Vite-based. Running the scaffolder requires
-the native shim built first (`bun run build:native:mac` in the bunium repo).
+Templates: `react-ts`, `react-js`, `solid-ts`, `solid-js`, `vue-ts`, `vue-js` — all
+Vite-based.
+
+## Install into an existing project
+
+```sh
+bun add bunium
+```
 
 ## Minimal app
 
@@ -51,8 +44,8 @@ win.onClose(() => {
 });
 ```
 
-`new BuniumWindow(...)` calls `app.init()` implicitly, which starts the CEF + Cocoa
-pump loop. One process = one `BuniumApp`, ever (CEF's singleton process model).
+`new BuniumWindow(...)` calls `app.init()` implicitly, which starts the CEF pump
+loop. One process = one `BuniumApp`, ever (CEF's singleton process model).
 
 ## Dev vs prod
 
@@ -79,14 +72,10 @@ Scaffolded apps get an `electron/main.{ts,js}` with exactly that dev/prod branch
 (`tsc -b && vite build`), and `start`. See the template's own README comments for
 details.
 
-## Verification
+## Shipping your app
 
-The repo ships headless end-to-end examples under `examples/` (exit 0 = pass,
-pixel readback via `captureScreenshot()` rather than just "didn't crash"). Run them
-sequentially — CEF's per-profile `ProcessSingleton` aborts concurrent processes:
+See [Packaging](/guide/packaging) for producing a distributable `.app`/`.exe`/
+`.deb`/AppImage, and [Auto-update](/guide/updates) for shipping updates to it.
 
-```sh
-bun run --cwd examples webview-element-test.ts
-```
-
-Related: [Window](/guide/window), [Typed IPC](/guide/ipc), [System features](/guide/system).
+Related: [Window](/guide/window), [Typed IPC](/guide/ipc),
+[`<bunium-webview>`](/guide/webview), [System features](/guide/system).
