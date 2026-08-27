@@ -73,7 +73,11 @@ jobs:
           BUNIUM_BUNDLE_DEBUG: "1"
           BUNIUM_CEF_SWITCHES: "--disable-gpu --disable-gpu-compositing"
         run: |
-          bun examples/basic-window.ts 2>&1 | tee smoke.log
+          # Run under lldb batch mode so a silent/no-report crash (the class
+          # seen previously on this GPU-less runner) still yields a real
+          # backtrace in smoke.log instead of a bare "exit 1".
+          lldb -b -o run -o "bt all" -o quit \
+            -- "$(command -v bun)" examples/basic-window.ts 2>&1 | tee smoke.log
           grep -q "frameCount" smoke.log
 
       - name: Collect crash reports
