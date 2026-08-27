@@ -709,6 +709,29 @@ public:
       CefRefPtr<CefCommandLine> command_line) override {
     command_line->AppendSwitch("disable-gpu");
     command_line->AppendSwitch("disable-gpu-compositing");
+    // Chromium's spare-renderer-process feature pre-spawns an idle renderer
+    // ahead of the next navigation as a latency optimization for real
+    // browsers with tabs/link-clicking. A bunium window's one navigation is
+    // already known at CreateBrowser time -- there's no "next tab" to
+    // pre-warm for -- so this only costs an extra always-on renderer
+    // process for nothing. Confirmed via ps against benchmark/electron-*:
+    // Electron's own renderer command line already carries
+    // --disable-features=...SpareRendererForSitePerProcess..., and
+    // disabling it here dropped bunium's process count 6->5 (matching
+    // Electron) with no functional loss (verified full example/scaffold
+    // sweep after this change).
+    // AppendSwitchWithValue would clobber, not merge, any
+    // "disable-features" CEF/Chromium already set on this command line
+    // internally (observed non-empty on renderer processes) -- merge
+    // explicitly instead of gambling on undocumented CommandLine merge
+    // behavior.
+    std::string disable_features = "SpareRendererForSitePerProcess";
+    if (command_line->HasSwitch("disable-features")) {
+      std::string existing = command_line->GetSwitchValue("disable-features").ToString();
+      if (!existing.empty())
+        disable_features = existing + "," + disable_features;
+    }
+    command_line->AppendSwitchWithValue("disable-features", disable_features);
   }
 
   // CefBrowserProcessHandler contract, only meaningful with
