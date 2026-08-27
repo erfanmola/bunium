@@ -722,21 +722,6 @@ public:
     // arbitrary/untrusted web content -- bunium's <bunium-webview> can load
     // real remote content, so that boundary has to stay a real process.
     command_line->AppendSwitch("in-process-gpu");
-    // Chromium's macOS system-proxy-config watcher (ProxyConfigServiceMac,
-    // via SCDynamicStore) is a real, measured, reproducible idle-CPU cost
-    // (~55% -> ~33% of one core with this disabled, confirmed via multiple
-    // repeated `ps`-delta CPU-time measurements) even for a browser that
-    // never issues a real network request -- it polls/watches system proxy
-    // config regardless. Deliberate tradeoff, not free: this makes every
-    // bunium app bypass system/corporate-proxy configuration for ALL
-    // network requests, including real remote URLs loaded via loadURL()/
-    // <bunium-webview>. An app that specifically needs proxy-aware
-    // networking must override via BUNIUM_CEF_SWITCHES
-    // (e.g. unset --no-proxy-server isn't possible once baked in here --
-    // this needs revisiting as a real app-level opt-out, not just an
-    // env-var escape hatch, if a real user hits this).
-    command_line->AppendSwitch("no-proxy-server");
-    command_line->AppendSwitchWithValue("proxy-server", "direct://");
     // Chromium's spare-renderer-process feature pre-spawns an idle renderer
     // ahead of the next navigation as a latency optimization for real
     // browsers with tabs/link-clicking. A bunium window's one navigation is
