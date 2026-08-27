@@ -26,9 +26,7 @@
 bunium is a from-scratch alternative to Electron. Instead of Node + Chromium bundled
 by Electron's own build, bunium runs on the **Bun** runtime and embeds **CEF** (the
 Chromium Embedded Framework) directly, rendered into a native layer — not a system
-WebView, not Electron's fork of Chromium. Every window is real Chromium, composited
-via `bun:ffi` calls into a small C++ shim over CEF's C++ API (never hand-rolled
-vtable structs — see [ARCHITECTURE.md](ARCHITECTURE.md)).
+WebView, not Electron's fork of Chromium. Every window is real Chromium.
 
 - **DOM-integrated `<bunium-webview>`** — a real custom element, not an iframe hack,
   clipped/z-ordered/hit-tested as a native sublayer.

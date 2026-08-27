@@ -3,7 +3,6 @@
 bunium's renderer ↔ main communication is one generic transport with typed
 message maps — no per-feature bespoke bridges.
 
-Both directions run over `CefProcessMessage`:
 - **Renderer → main:** your page calls `window.__bunium.send(name, payload)`; the
   main process dispatches to whatever `win.on(name, listener)` registered.
 - **Main → renderer:** `win.emit(name, payload)`; the page's
@@ -57,16 +56,7 @@ listen for or send them from app code.
 
 No manual reporting API. Mark elements with CSS
 `-webkit-app-region: drag` (Electron's property) and bunium scans automatically —
-on load, resize, and DOM mutation (`MutationObserver`, debounced per animation
-frame). Rect hits go through `performWindowDragWithDragEvent`. Known v1
-limitation: the whole region is non-interactive, so don't put clickable buttons
-inside one yet.
-
-## Existing examples
-
-`examples/typed-ipc-test.ts` (ordered multi-message delivery with typed
-payloads), `examples/typed-ipc-emit-test.ts` (main → renderer, DOM/pixel-verified
-color change), `examples/draggable-regions-test.ts` (region detection + point
-hit-testing).
+on load, resize, and DOM mutation. Known v1 limitation: the whole region is
+non-interactive, so don't put clickable buttons inside one yet.
 
 Related: [Window](/guide/window), [System features](/guide/system).

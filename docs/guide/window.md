@@ -25,11 +25,6 @@ const win = new BuniumWindow({ url: "bunium://app/" });
 | `minWidth`/`minHeight` | `number` | unset | Minimum content size for user resize.                        |
 | `maxWidth`/`maxHeight` | `number` | unset | Maximum content size for user resize.                        |
 
-Native ABI note: window creation and constraints are deliberately two separate
-calls — bun:ffi on arm64 corrupts the 9th+ argument of a single call, so every
-native function stays at ≤ 8 args. No action needed from you; design constraint
-only.
-
 ## Methods
 
 | Method | Signature | Notes |
@@ -76,13 +71,13 @@ via `captureScreenshot()`.
 
 ## Frameless windows
 
-`frame: false` uses `NSWindowStyleMaskBorderless`; the native resize bar is gone,
-so AppKit's free edge-drag resizing is lost too. bunium reimplements 6px edge
-hit-testing natively for `frame: false` + `resizable: true` windows (titled and
-non-resizable windows are completely unaffected). To move a frameless window, mark
-page elements with CSS `-webkit-app-region: drag` — bunium scans automatically.
-Note: a drag region is fully non-interactive (no Electron-style `no-drag` override
-for buttons inside one yet).
+`frame: false` removes the native title bar/border, including the OS's own
+edge-drag resizing — bunium reimplements 6px edge hit-testing for
+`frame: false` + `resizable: true` windows (titled and non-resizable windows are
+unaffected). To move a frameless window, mark page elements with CSS
+`-webkit-app-region: drag` — bunium scans automatically. Note: a drag region is
+fully non-interactive (no Electron-style `no-drag` override for buttons inside
+one yet).
 
 ## Shutdown
 

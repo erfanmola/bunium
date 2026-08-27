@@ -44,8 +44,8 @@ win.onClose(() => {
 });
 ```
 
-`new BuniumWindow(...)` calls `app.init()` implicitly, which starts the CEF pump
-loop. One process = one `BuniumApp`, ever (CEF's singleton process model).
+`new BuniumWindow(...)` starts the app automatically. One `bunium` app per
+process — don't try to run two.
 
 ## Dev vs prod
 
