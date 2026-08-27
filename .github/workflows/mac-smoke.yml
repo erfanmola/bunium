@@ -68,9 +68,20 @@ jobs:
 
       - name: Smoke — basic-window example
         timeout-minutes: 3
+        env:
+          BUNIUM_CEF_VERBOSE: "1"
+          BUNIUM_BUNDLE_DEBUG: "1"
         run: |
           bun examples/basic-window.ts 2>&1 | tee smoke.log
           grep -q "frameCount" smoke.log
+
+      - name: Collect crash reports
+        if: always()
+        run: |
+          mkdir -p crash-reports
+          cp -r ~/Library/Logs/DiagnosticReports/*.ips crash-reports/ 2>/dev/null || true
+          cp -r ~/Library/Logs/DiagnosticReports/*.crash crash-reports/ 2>/dev/null || true
+          ls -la crash-reports || true
 
       - name: Package fixture app + verify packaged run
         timeout-minutes: 8
@@ -90,4 +101,5 @@ jobs:
             smoke.log
             pack.log
             pack-verify.log
+            crash-reports/
           retention-days: 7
