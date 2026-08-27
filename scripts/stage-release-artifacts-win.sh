@@ -117,7 +117,10 @@ cat > "$STAGE/package.json" <<EOF
 }
 EOF
 
-tar -C "$OUT_DIR" -czf "$OUT_DIR/$PKG_NAME-$VERSION.tar.gz" "$PKG_NAME"
+# --force-local: bsdtar on Git-for-Windows otherwise parses the drive-letter
+# colon in an absolute -f path (D:/...) as a "host:path" remote-tar spec and
+# tries to shell out to ssh/rsh -- a real CI failure, not theoretical.
+tar --force-local -C "$OUT_DIR" -czf "$OUT_DIR/$PKG_NAME-$VERSION.tar.gz" "$PKG_NAME"
 
 SIZE="$(du -sh "$STAGE" | awk '{print $1}')"
 echo "staged: $STAGE ($SIZE)"
