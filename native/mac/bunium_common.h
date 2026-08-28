@@ -725,7 +725,21 @@ public:
     // internally (observed non-empty on renderer processes) -- merge
     // explicitly instead of gambling on undocumented CommandLine merge
     // behavior.
-    std::string disable_features = "SpareRendererForSitePerProcess";
+    // Mach port rendezvous peer code-signature validation
+    // (MachPortRendezvousValidatePeerRequirements /
+    // MachPortRendezvousEnforcePeerRequirements, base/mac/process_requirement*
+    // upstream) is FEATURE_DISABLED_BY_DEFAULT in Chromium but active in this
+    // CEF build's baked-in field-trial config -- confirmed via a real
+    // symbolicated profile (CEF's own release_symbols dSYM matched by UUID
+    // against the vendored framework, see PLAN.md/benchmark/RESULTS.md for the
+    // full methodology): a ThreadPoolForegroundWorker thread spent its entire
+    // sampled window inside
+    // base::mac::ProcessRequirement::{ValidateProcess,GatherMetrics}, which
+    // disappeared from the profile entirely once these were disabled.
+    std::string disable_features =
+        "SpareRendererForSitePerProcess,"
+        "MachPortRendezvousValidatePeerRequirements,"
+        "MachPortRendezvousEnforcePeerRequirements";
     if (command_line->HasSwitch("disable-features")) {
       std::string existing = command_line->GetSwitchValue("disable-features").ToString();
       if (!existing.empty())
