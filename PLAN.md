@@ -2050,39 +2050,55 @@ Verified after every change: 37/37 `examples/*.ts`, 6/6
       (verified clean, safer than `--single-process`) stay documented in
       `benchmark/RESULTS.md` since they're still real findings, just not a
       shipped default.
-- [ ] **Idle CPU (~55-59% of one core, unchanged) — root cause narrowed
-      further, still not fixed. Includes a real measurement mistake, made
-      and corrected within this session.** Isolated
-      `bunium_do_message_loop_work()`/`bunium_pump_native_events()` in a
-      standalone FFI harness: neither costs anything alone at any interval;
-      both together cost 25-59% with no clean relationship to poll
-      interval — rules out the adaptive pump loop as a CPU fix (it fixed
-      IPC latency, not this). Tried `windowless_frame_rate = 1`: no
-      measurable change, ruling out OSR frame-rate as the direct driver
-      too. **Then found `--no-proxy-server` (disabling Chromium's macOS
-      system-proxy-config watcher) apparently cut CPU 55%→33%, shipped
-      it** — then caught the mistake: extending the CPU-timeline
-      measurement to 1-30s (1s resolution) revealed idle CPU is near-zero
-      for ~3-4s after launch, then jumps to a sustained ~55-59% that never
-      drops — the "win" was sampling entirely inside that pre-onset
-      window. Re-measured against the real steady state:
-      `--no-proxy-server` made no difference. **Reverted** — no longer
-      worth its real downside (breaks proxy/VPN-aware networking for every
-      bunium app) once the benefit turned out not to exist. `sample`(1)-
-      profiled the true steady state: cost sits inside Chromium Embedded
-      Framework, spread across many `ThreadPoolForegroundWorker` threads
-      (not one dedicated thread) — consistent with Chromium's
-      `BEST_EFFORT`-priority background task scheduling, which by design
-      defers non-critical work a few seconds past startup, matching the
-      observed onset closely. Tried disabling Safe Browsing
-      auto-update/phishing-detection, crash reporter/breakpad, the stack
-      sampling profiler, and desktop-PWA/shortcut OS-integration features
-      — none moved the steady-state number. **Real next step, not
-      attempted:** identifying the exact deferred task needs a
-      symbolized/debug CEF build (the vendored distro is stripped —
-      `sample` resolves to the nearest exported symbol, not the true call
-      site) or Chromium source-level work. Full timeline data and the
-      measurement-mistake writeup in `benchmark/RESULTS.md`.
+- [x] **Idle CPU, Round D (same day): user rejected "architectural limit"
+      as an answer, demanded real root-causing — got real symbols, found
+      and fixed one named cause, precisely identified a second.** Prior
+      rounds (black-box `sample` against the stripped vendored CEF binary)
+      produced only circumstantial conclusions — confirmed via `nm` that
+      the nearest exported symbol `sample` was resolving to sat **27MB**
+      from the true call site. Downloaded CEF's real `release_symbols`
+      dSYM package (aria2 `-x16` for usable throughput — single-connection
+      curl against CEF's CDN caps at ~300-500KB/s, aria2 hit ~40MB/s),
+      UUID-verified it matches the vendored framework, co-located it so
+      `sample`/`lldb` auto-resolve real symbols. Result: a
+      `ThreadPoolForegroundWorker` thread's entire sampled window was
+      inside `base::mac::ProcessRequirement::{ValidateProcess,
+      GatherMetrics}` — real macOS code-signature validation, Chromium's
+      Mach port rendezvous peer-validation feature
+      (`MachPortRendezvousValidatePeerRequirements`/
+      `MachPortRendezvousEnforcePeerRequirements`, disabled by default
+      upstream, active in this CEF build's field-trial config). **Fixed
+      and shipped** (`OnBeforeCommandLineProcessing`,
+      `bunium_common.h`) — idle CPU 58-60%→50-51%, repeatable across 6+
+      runs, verified against 37/37 examples + 6/6 scaffolds. Then captured
+      a Perfetto trace (`--trace-startup`, CEF's tracing infra already
+      compiled in) for a task-level breakdown finer than stack sampling
+      can give: `SequenceManagerImpl::SelectNextTask` fires ~4143/sec on
+      the browser's main thread but only ~439/sec of those calls actually
+      run a task (`ThreadControllerImpl::RunTask`) — isolated whether
+      Phase-1's `external_message_pump=true` causes this (temporarily
+      reverted to `false`: `SelectNextTask` dropped 6.2x with `RunTask`
+      unchanged, but **measured CPU% didn't move either way** — the empty
+      polling is real but cheap, not the actual driver; kept
+      `external_message_pump=true` for its real IPC-latency win). Queried
+      what actually runs inside `RunTask` by `task.posted_from` source
+      file: **Chromium's own internal `StackSamplingProfiler`
+      (`base/profiler/stack_sampling_profiler.cc`) is ~28% of real task
+      executions** — confirmed by exact source file, not inferred. Four
+      disabling attempts (feature flags, metrics/field-trial disables,
+      combined with breakpad/crash-reporter/HangWatcher) had zero measured
+      effect — not gated by any command-line switch in this build.
+      `chrome/common/stack_sampling_configuration.*` (the file that
+      decides whether it runs) 404/403'd on both
+      `chromium.googlesource.com` and `source.chromium.org` this
+      session — identified, not yet fixed. **Real, scoped next step:** a
+      full local Chromium checkout (sparse checkouts don't work well
+      against Chromium's monorepo tooling) or a patched-from-source CEF
+      build with the profiler's enable-check forced off, verified against
+      the same dSYM + Perfetto methodology (both fully reusable, commands
+      in `benchmark/RESULTS.md`). Full trace-query breakdown table (Mojo/
+      IPC dispatch ~29%, `KeyedServiceFactory`, real SQLite `Database::*`
+      activity) also in `benchmark/RESULTS.md`.
 - [ ] **Startup time (~300-330ms vs Electron's ~160-200ms, unchanged) — no
       bunium-specific inefficiency found, investigated twice.** Every
       window-creation FFI call is a single synchronous native call with no

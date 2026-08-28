@@ -56,7 +56,7 @@ the current, accurate state:
 | process count (main + helpers) | 5 | 5 | 5 | 5 | tied |
 | idle RSS, mini-app (MB) | 467.2 | 450.9 | — | — | Electron |
 | process start → first paint (ms) | 302 | **160** | 329 | **194** | Electron |
-| idle CPU, full process tree (%) | 58-60 | **0** | 58-60 | **0** | Electron |
+| idle CPU, full process tree (%) | 50-51 | **0** | 50-51 | **0** | Electron |
 | IPC round trip, avg of 50 (ms) | — | — | 2.6 | **0.5** | Electron |
 | mini-app DOM render, 200 rows (ms) | — | — | 0.9 | 1.0 | ~tied |
 
@@ -103,8 +103,7 @@ tie (6→5) and the minimal-app RSS win that survives the revert.
 
 ## What was tried on idle CPU, including a real mistake worth recording
 
-Idle CPU is the one metric where a genuine measurement error happened mid-
-session, corrected before shipping anything wrong long-term:
+### Round A: black-box guessing (no real symbols) — mostly dead ends, one real fix
 
 - Isolated the two native pump calls in a standalone FFI harness: neither
   costs anything alone at any interval; running both together costs
@@ -125,21 +124,170 @@ session, corrected before shipping anything wrong long-term:
   longer worth its real downside (bypasses system/corporate-proxy
   configuration for every bunium app's network requests) once the
   benefit turned out not to exist.
-- `sample`(1)-profiled the steady-state window: dominant cost sits inside
-  Chromium Embedded Framework itself, spread across many
-  `ThreadPoolForegroundWorker` threads (not one dedicated thread),
-  consistent with Chromium's `BEST_EFFORT`-priority background task
-  scheduling — which by design defers non-critical work for a few seconds
-  after startup so it doesn't compete with initial page load, matching
-  the observed ~3-4s onset exactly. Tried disabling various plausible
-  candidate features (Safe Browsing auto-update/phishing detection, crash
-  reporter/breakpad, stack sampling profiler, desktop-PWA/shortcut
-  OS-integration features): none moved the steady-state number.
-- **Real next step, not attempted:** identifying the exact deferred
-  BEST_EFFORT task(s) needs either a symbolized/debug CEF build (the
-  vendored distro is a stripped minimal release build — `sample`'s output
-  resolves to the nearest exported symbol, not the true call site) or
-  Chromium source-level investigation. Beyond this session's scope.
+- `sample`(1) without real debug symbols resolves everything inside the
+  vendored (stripped, release-build) CEF framework to the *nearest
+  exported symbol*, which for ~99% of the binary's code is tens of
+  megabytes away from the true call site — confirmed via `nm`, the next
+  exported symbol after the one `sample` kept reporting was **27MB**
+  later in the binary. Every conclusion drawn from this round was
+  necessarily circumstantial. Tried disabling ~15 plausible candidate
+  features this way (Safe Browsing, crash reporter/breakpad, stack
+  sampling profiler via `--disable-features=StackSamplingProfiler`,
+  desktop-PWA/shortcut OS-integration, component update, sync/translate,
+  variations/field-trial config, `--incognito`, `--single-process`'s
+  safer sibling `--in-process-gpu`): only `--in-process-gpu` (process
+  count, see above) turned out to be real when re-checked with actual
+  symbols. This whole round should have been done with real symbols from
+  the start — see Round B.
+
+### Round B: real symbols — one confirmed, named, shipped fix
+
+CEF publishes a `release_symbols` package (dSYM bundle) per version,
+matched by build UUID to the vendored framework — this makes `sample`/
+`lldb` resolve real function names instead of guessing. Reusable
+procedure:
+
+```bash
+# CEF's CDN throttles single-connection downloads hard (~300-500KB/s,
+# a ~2GB package = hours) -- 16 parallel connections via aria2 gets
+# ~40MB/s instead:
+brew install aria2
+V="151.3.16+gbe1e15d+chromium-151.0.7922.109"  # match .github/workflows/mac-smoke.yml's CEF_VERSION
+aria2c -x16 -s16 --file-allocation=none \
+  -o cef-symbols.tar.bz2 \
+  "https://cef-builds.spotifycdn.com/cef_binary_${V}_macosarm64_release_symbols.tar.bz2"
+tar xjf cef-symbols.tar.bz2
+
+# Verify the dSYM actually matches the vendored binary before trusting it:
+dwarfdump --uuid "vendor/cef-macosarm64/Release/Chromium Embedded Framework.framework/Chromium Embedded Framework"
+dwarfdump --uuid "cef_binary_*_release_symbols/Chromium Embedded Framework.dSYM"
+# UUIDs must match exactly.
+
+# sample/lldb auto-discover a co-located <binary-name>.dSYM sibling:
+cp -R "cef_binary_*_release_symbols/Chromium Embedded Framework.dSYM" \
+  "vendor/cef-macosarm64/Release/"
+# (~6.9GB on disk -- delete after use, it's not needed once you have your
+# findings, and it's git-ignored regardless since it lives under vendor/)
+```
+
+With the dSYM in place, `sample <pid> <seconds> -file out.txt` on a live
+bunium process resolves real C++ symbols. Grand total across a proper
+15-second post-idle sample, parsed by summing all `(in Chromium Embedded
+Framework)`-attributed lines: no single function dominates (max ~7.6%) —
+the cost is genuinely spread across Chromium's own task-scheduling
+machinery (`WorkerThread::RunWorker`, `ThreadControllerWithMessagePumpImpl
+::DoWork`, `SequenceManagerImpl::SelectNextTask`, `RunLoop::Run`, etc.),
+**except one outlier**: a `ThreadPoolForegroundWorker` thread whose entire
+sampled window (11263 of ~12800 samples in one run) was inside
+`base::mac::ProcessRequirement::{ValidateProcess,GatherMetrics}` — real
+macOS code-signature validation (`SecStaticCodeCheckValidityWithErrors`
+et al., matching an earlier Round-A `Security.framework` observation that
+had no way to be confirmed at the time). This is Chromium's Mach port
+rendezvous peer-validation feature
+(`MachPortRendezvousValidatePeerRequirements`/
+`MachPortRendezvousEnforcePeerRequirements`,
+`FEATURE_DISABLED_BY_DEFAULT` upstream but active in this CEF build's
+baked-in field-trial config) — confirmed by re-sampling with the features
+disabled: the symbol disappeared from the profile entirely. **Shipped.**
+Measured effect: idle CPU 58-60% → 50-51% (repeatable across 6+ runs).
+
+### Round C: Perfetto tracing — precise task-level breakdown, real remaining root cause identified but not yet fixable via any flag
+
+Stack sampling shows *where* CPU goes but not *what task* or *who posted
+it*. Chromium's own tracing infrastructure answers that directly and is
+already compiled into CEF (`PerfettoTrace` was visible as a thread name in
+every `sample` capture this session). Reusable procedure:
+
+```bash
+# Capture a trace via the CEF switches passthrough:
+BUNIUM_CEF_SWITCHES="--trace-startup=*,disabled-by-default-toplevel,disabled-by-default-sequence_manager \
+  --trace-startup-duration=10 --trace-startup-file=/tmp/trace.json" \
+  bun run <your-app>
+
+# Output is a binary Perfetto proto (despite the .json name), not legacy
+# Chrome JSON trace format. Google's own trace_processor_shell download
+# (commondatastorage.googleapis.com) 403'd repeatedly in this environment
+# -- GitHub releases worked fine:
+curl -sL "https://api.github.com/repos/google/perfetto/releases/latest" \
+  | grep -o '"browser_download_url": *"[^"]*mac-arm64.zip"' | cut -d'"' -f4 \
+  | xargs curl -fL -o perfetto.zip
+unzip perfetto.zip -d perfetto-tools
+xattr -d com.apple.quarantine perfetto-tools/mac-arm64/trace_processor_shell
+
+perfetto-tools/mac-arm64/trace_processor_shell -q <(echo "
+  SELECT name, count(*) as cnt FROM slice GROUP BY name ORDER BY cnt DESC LIMIT 40;
+") /tmp/trace.json
+```
+
+A 10-second idle trace on `bunium-minimal` gave exact counts:
+
+| what | count (10s) | rate |
+|---|---|---|
+| `SequenceManagerImpl::SelectNextTask` | 41427 | ~4143/sec |
+| `SequenceManagerImpl::MoveReadyDelayedTasksToWorkQueues` | 41427 | ~4143/sec |
+| `ThreadControllerImpl::DoWork` | 40042 | ~4004/sec |
+| `ThreadControllerImpl::RunTask` (tasks that actually ran) | 4392 | ~439/sec |
+
+89% of the `SelectNextTask` calls are on `CrBrowserMain` (the browser
+process's own main thread — the one `src/app.ts`'s pump loop drives).
+**Isolated one variable at a time:**
+- Reverting `settings.external_message_pump` to `false` (this session's
+  Phase-1 pump-loop change, reverted temporarily as a test) dropped
+  `SelectNextTask` 6.2x (41427→6685) while `RunTask` stayed *exactly* the
+  same (4396 vs 4392) — meaning `external_message_pump=true` causes ~6x
+  more empty scheduler polling with zero extra useful work done.
+- But re-measured actual CPU% with `external_message_pump=false`: **no
+  change** (50-51% either way, 3 reps each). The empty `SelectNextTask`
+  polling is real and 6x reduced, but it's cheap enough that it isn't
+  where the CPU actually goes — confirms the adaptive pump (kept, for its
+  real IPC-latency win) isn't the CPU driver either way.
+- The real driver tracks `RunTask` (~439/sec of *actual* task execution,
+  identical regardless of pump mode). Queried each `RunTask`'s
+  `task.posted_from.file_name`/`function_name` args directly:
+
+| source | share of RunTask calls |
+|---|---|
+| `base/profiler/stack_sampling_profiler.cc` + `stack_sampler.cc` (functions `RecordSampleTask`/`RecordStackFrames`) | ~28% |
+| `mojo/public/cpp/system/simple_watcher.cc` (`Notify`) | ~17% |
+| `mojo/public/cpp/bindings/lib/connector.cc` + `ipc/ipc_mojo_bootstrap.cc` (mojo message dispatch) | ~12% |
+| `KeyedServiceFactory::GetServiceForContext` (Chrome profile-keyed services) | tracked separately, 1630 calls/10s |
+| `Database::*` (real SQLite activity — `ReleaseCacheMemoryIfNeeded`, `Statement`, `Execute*`) | tracked separately, ~2100 calls/10s combined |
+| `base/tracing/perfetto_task_runner.cc` | excluded — self-inflicted by the trace capture itself, not present in normal operation |
+
+**Chromium's own internal `StackSamplingProfiler` (the profiler CEF/Chrome
+uses for its own performance-UMA telemetry) is the single largest named
+contributor at ~28% of real task executions** — genuinely running,
+confirmed by exact source file, not inferred. Tried disabling it four
+different ways with the *correct* long-window methodology this time
+(`--disable-features=StackSamplingProfiler,SamplingHeapProfiler`,
+combined with `--force-fieldtrials= --metrics-recording-only
+--disable-metrics`, combined with breakpad/crash-reporter/HangWatcher
+disables): **no measured effect on CPU% in any combination.** This
+strongly suggests it's not gated by a command-line feature flag in this
+build — `chrome/common/stack_sampling_configuration.*` (the file that
+decides whether the profiler runs, gated historically on metrics-client-ID
+availability and release channel) is the next real lead, but both
+`chromium.googlesource.com` and `source.chromium.org` returned 404/403 for
+this specific file during this session (works for some files, not others —
+inconsistent, possibly path has moved in newer Chromium). The Mojo/IPC
+dispatch machinery (~29% combined) is plausibly unavoidable multi-process
+overhead rather than a bug.
+
+**Concrete next steps for continuing this** (real, scoped, not hand-wavy):
+1. Find the current path/logic for what gates `StackSamplingProfiler` —
+   either a full (not shallow — sparse checkouts of one file don't work
+   well against Chromium's monorepo tooling) local Chromium checkout, or
+   patch CEF from source with the profiler's enable-check forced off and
+   rebuild (verify against the same UUID-matched dSYM + Perfetto trace
+   methodology above to confirm before/after).
+2. Re-run the exact Perfetto query above after any change — it's the most
+   precise instrument found this session, far better than stack sampling
+   for "which named task, how often."
+3. If StackSamplingProfiler + Mojo/IPC dispatch really are the ceiling,
+   remaining idle CPU may be a hard floor of "any multi-process Chrome-
+   bootstrap-based CEF app" rather than something bunium's own code
+   controls — but that conclusion should come from ruling out the
+   profiler with certainty first, not assumed.
 
 ## What was tried on startup time
 

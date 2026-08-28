@@ -32,7 +32,7 @@ RSS win; both regress with the revert. Current, accurate numbers:
 | process count (main + helpers) | 5 | 5 | tied |
 | idle RSS, mini-app (MB) | 467.2 | 450.9 | Electron |
 | process start → first paint (ms) | 302-329 | 160-194 | Electron |
-| idle CPU, full process tree (%) | 58-60 | **0** | Electron |
+| idle CPU, full process tree (%) | 50-51 | **0** | Electron |
 | IPC round trip, avg of 50 (ms) | 2.6 | 0.5 | Electron |
 | mini-app DOM render, 200 rows (ms) | 0.9 | 1.0 | ~tied |
 
@@ -64,30 +64,46 @@ security boundary against untrusted content `<bunium-webview>` can load.
 Rejected as unsafe for a general-purpose framework regardless of the
 benchmark win.)
 
-## Idle CPU: a real measurement mistake, caught and reverted
+## Idle CPU: real symbol-level investigation, one fix shipped, one named cause still open
 
-Worth telling honestly rather than glossing over. An initial fix
-(`--no-proxy-server`, disabling Chromium's macOS system-proxy-config
-watcher) looked like a real 55%→33% win when measured 2-5 seconds after
-launch, and shipped. Extending the measurement window (1-30 seconds, 1s
-resolution) revealed the actual pattern: idle CPU is near-zero for the
-first ~3-4 seconds, then jumps to a sustained ~55-59% that never comes
-back down. The "win" was sampling entirely within that pre-onset window —
-re-measured against the real steady state and the proxy fix made no
-difference. It was **reverted**, since it no longer had a benefit to
-justify its real downside (bypassing proxy/VPN-aware networking for every
-bunium app).
+Full methodology (reusable — dSYM download/UUID-matching, Perfetto trace
+capture/query) is in `benchmark/RESULTS.md`. Short version:
 
-The actual cost profiles to something inside Chromium Embedded Framework
-itself, spread across many background thread-pool workers rather than one
-dedicated thread — consistent with Chromium's own `BEST_EFFORT`-priority
-task scheduling, which deliberately defers non-critical background work
-for a few seconds after startup so it doesn't compete with the initial
-page load (matching the observed onset almost exactly). Several plausible
-feature-disabling switches were tested (Safe Browsing, crash reporting,
-sampling profiler, desktop-PWA OS integration) with no effect. Pinning
-down the exact task needs a symbolized/debug CEF build or Chromium
-source-level work — out of reach this pass.
+An initial black-box fix (`--no-proxy-server`) looked like a real 55%→33%
+win when measured 2-5 seconds after launch, shipped, then caught and
+**reverted**: extending the measurement window to 30s revealed idle CPU
+is near-zero for ~3-4s then jumps to a sustained plateau — the "win" was
+sampling entirely inside that pre-onset window. Real steady-state showed
+no difference. Every conclusion from stripped-binary stack sampling in
+this codebase should be treated as circumstantial for the same reason —
+`sample`'s nearest-exported-symbol fallback was landing **27MB** away from
+the true call site.
+
+Downloaded CEF's actual debug symbols (a `release_symbols` package, UUID-
+matched to the vendored framework) and re-profiled with real function
+names. Found and shipped a genuine, named fix: a `ThreadPoolForegroundWorker`
+thread's entire sampled window was inside
+`base::mac::ProcessRequirement::{ValidateProcess,GatherMetrics}` — real
+macOS code-signature validation, part of Chromium's Mach port rendezvous
+peer-validation feature (disabled by default upstream, active in this
+CEF build's baked-in config). Disabling it dropped idle CPU 58-60%→50-51%,
+repeatable across 6+ runs.
+
+Captured a Perfetto trace (Chromium's own tracing infra, already compiled
+into CEF) for a task-level breakdown beyond what stack sampling can show.
+The single largest remaining named contributor: Chromium's own internal
+`StackSamplingProfiler` (its performance-telemetry system) at ~28% of real
+task executions — confirmed by exact source file
+(`base/profiler/stack_sampling_profiler.cc`), not inferred. Four different
+disabling attempts (feature flags, metrics/field-trial disables, combined
+with breakpad/crash-reporter/HangWatcher) had zero measured effect,
+meaning it isn't gated by any command-line switch in this build. Chromium
+source browsing for the exact gating logic (`chrome/common/
+stack_sampling_configuration.*`) hit 404/403 walls on both
+`chromium.googlesource.com` and `source.chromium.org` this session —
+identified but not yet fixed. Real next step: full local Chromium checkout
+or a patched CEF build with the profiler's enable-check forced off,
+verified against the same dSYM + Perfetto methodology.
 
 ## Startup time: investigated, no lever found
 
