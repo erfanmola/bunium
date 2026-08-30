@@ -20,12 +20,28 @@ interface RunResult {
   extra: Record<string, number[]>;
 }
 
+// Windows has no `ps` -- PowerShell's CIM process class is the equivalent
+// (ProcessId/ParentProcessId columns, tab-separated for easy parsing).
+// UNVERIFIED on real Windows (no Windows machine in this dev environment,
+// same posture as packaging/win/cef-trim.sh and the win32-x64 release job --
+// see PLAN.md) -- test this for real before trusting it on that platform.
+const WIN_DESCENDANTS_CMD = [
+  "powershell",
+  "-NoProfile",
+  "-Command",
+  "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ForEach-Object { \"$($_.ProcessId)`t$($_.ParentProcessId)\" }",
+];
+
 function descendants(rootPid: number): number[] {
-  const out = Bun.spawnSync(["ps", "-axo", "pid=,ppid="]);
+  const out =
+    process.platform === "win32"
+      ? Bun.spawnSync(WIN_DESCENDANTS_CMD)
+      : Bun.spawnSync(["ps", "-axo", "pid=,ppid="]);
   const lines = out.stdout.toString().trim().split("\n");
   const childrenOf = new Map<number, number[]>();
+  const sep = process.platform === "win32" ? /\t/ : /\s+/;
   for (const line of lines) {
-    const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+    const [pid, ppid] = line.trim().split(sep).map(Number);
     if (pid === undefined || ppid === undefined) continue;
     (childrenOf.get(ppid) ?? childrenOf.set(ppid, []).get(ppid)!).push(pid);
   }
@@ -55,8 +71,34 @@ function parseCpuTime(t: string): number {
   return seconds;
 }
 
+// Same UNVERIFIED-on-real-Windows caveat as descendants() above.
+// Get-Process's `CPU` property is already total processor seconds (a
+// double) -- no HH:MM:SS parsing needed, unlike ps's `time=`.
+// WorkingSet64 is bytes, converted to KB to match ps's `rss=` (KB) unit.
+function winSampleTree(pids: number[]): { rssKb: number; cpuSec: number } {
+  const idList = pids.join(",");
+  const cmd = [
+    "powershell",
+    "-NoProfile",
+    "-Command",
+    `Get-Process -Id ${idList} -ErrorAction SilentlyContinue | ForEach-Object { "$($_.WorkingSet64)\`t$($_.CPU)" }`,
+  ];
+  const out = Bun.spawnSync(cmd);
+  let rssKb = 0;
+  let cpuSec = 0;
+  for (const line of out.stdout.toString().trim().split("\n")) {
+    if (!line.trim()) continue;
+    const [ws, cpu] = line.trim().split(/\t/);
+    if (ws === undefined || cpu === undefined) continue;
+    rssKb += Number(ws) / 1024;
+    cpuSec += Number(cpu) || 0;
+  }
+  return { rssKb, cpuSec };
+}
+
 function sampleTree(pids: number[]): { rssKb: number; cpuSec: number } {
   if (pids.length === 0) return { rssKb: 0, cpuSec: 0 };
+  if (process.platform === "win32") return winSampleTree(pids);
   const out = Bun.spawnSync([
     "ps",
     "-o",

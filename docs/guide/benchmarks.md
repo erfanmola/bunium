@@ -28,17 +28,21 @@ RSS win; both regress with the revert. Current, accurate numbers:
 |---|---|---|---|
 | framework/runtime on-disk size | 260M | 306M | **bunium** |
 | process boot (bare `-e "exit(0)"`) | 6.3ms (bun) | 36.6ms (node) | **bunium** |
-| idle RSS, minimal app (MB) | **403.2** | 418.5 | **bunium** |
-| process count (main + helpers) | 5 | 5 | tied |
-| idle RSS, mini-app (MB) | 467.2 | 450.9 | Electron |
-| process start → first paint (ms) | 302-329 | 160-194 | Electron |
-| idle CPU, full process tree (%) | 50-51 | **0** | Electron |
-| IPC round trip, avg of 50 (ms) | 2.6 | 0.5 | Electron |
-| mini-app DOM render, 200 rows (ms) | 0.9 | 1.0 | ~tied |
+| idle RSS, minimal app (MB) | 432.7 | **374.1** | Electron |
+| process count (main + helpers) | 5 | 4 | Electron |
+| idle RSS, mini-app (MB) | 501.0 | **408.0** | Electron |
+| process start → first paint (ms) | 305-335 | 159-196 | Electron |
+| idle CPU, full process tree (%) | **3.5-4.0** | **0-0.5** | Electron (near-closed) |
+| IPC round trip, avg of 50 (ms) | 4.5 | 0.5 | Electron |
+| mini-app DOM render, 200 rows (ms) | 1.0 | 1.0 | tied |
 
-**3 of 8 metrics beaten outright:** disk size, process boot, minimal-app
-RSS. **1 tied:** process count. **4 remain behind:** mini-app RSS, startup
-time, idle CPU, IPC latency.
+**2 of 8 metrics beaten outright** (disk size, process boot) as of the
+latest regenerate (2026-08-31) — see `benchmark/RESULTS.md` for the full
+note on why RSS/process-count/IPC-latency moved unfavorably vs an
+earlier session's numbers (not root-caused, possibly just machine load at
+measurement time). **Idle CPU went from a hard 50-59% down to ~3-4%** (see
+below) — technically still shy of Electron's 0% but no longer the
+dominant gap.
 
 ## What actually closed the gap
 
@@ -64,7 +68,7 @@ security boundary against untrusted content `<bunium-webview>` can load.
 Rejected as unsafe for a general-purpose framework regardless of the
 benchmark win.)
 
-## Idle CPU: real symbol-level investigation, one fix shipped, one named cause still open
+## Idle CPU: root cause found and fixed (56-59% → ~3%)
 
 Full methodology (reusable — dSYM download/UUID-matching, Perfetto trace
 capture/query) is in `benchmark/RESULTS.md`. Short version:
@@ -97,13 +101,21 @@ task executions — confirmed by exact source file
 (`base/profiler/stack_sampling_profiler.cc`), not inferred. Four different
 disabling attempts (feature flags, metrics/field-trial disables, combined
 with breakpad/crash-reporter/HangWatcher) had zero measured effect,
-meaning it isn't gated by any command-line switch in this build. Chromium
-source browsing for the exact gating logic (`chrome/common/
-stack_sampling_configuration.*`) hit 404/403 walls on both
-`chromium.googlesource.com` and `source.chromium.org` this session —
-identified but not yet fixed. Real next step: full local Chromium checkout
-or a patched CEF build with the profiler's enable-check forced off,
-verified against the same dSYM + Perfetto methodology.
+meaning it isn't gated by any command-line switch in this build.
+
+A follow-up session tested the profiler hypothesis directly instead of
+guessing further: the real Chromium switch that disables it,
+`--disable-stack-profiler`, produced **zero measured effect** — high task-
+*count* share doesn't mean high CPU-*time* share; each sample was cheap.
+Same null result for `--disable-background-networking`. A fresh
+symbol-level `sample` capture found the real remaining driver: the exact
+same `ProcessRequirement::{ValidateProcess,GatherMetrics}` symbol from the
+fix above, but reached through a *separate* code path
+(`MaybeGatherMetrics()`) gated by a *third*, independent feature the
+earlier fix never touched — `GatherProcessRequirementMetrics`, pure UMA
+telemetry with no functional purpose for a non-metrics-reporting embedder.
+Disabling it dropped idle CPU **59.4% → 3.0%**, shipped alongside the
+earlier two `disable-features` entries in `bunium_common.h`.
 
 ## Startup time: investigated, no lever found
 
@@ -113,6 +125,50 @@ is a single synchronous native call, no extra round trips). Profiling the
 different cost, different cause. The ~300ms is attributed to
 `CefInitialize()` itself loading the CEF framework and spawning its
 subprocess tree, versus Electron's single precompiled executable.
+
+## Running these benchmarks on Linux / Windows
+
+The harness (`benchmark/scripts/{bench.ts,report.ts}`) is now
+cross-platform in code — `process.platform` branches handle the two
+things that were mac/Linux-only (`ps` doesn't exist on Windows; the
+hardcoded `./node_modules/.bin/electron` shim path doesn't work there
+without `shell: true`). **The Windows branch is unverified — no Windows
+machine was available to test it when it was written (2026-08-31), same
+posture as `packaging/win/cef-trim.sh` and the win32-x64 release CI job.**
+Linux needs no code changes (GNU `ps` accepts the same `-o pid=,rss=,time=`
+format used here) and should just work.
+
+Steps on either platform:
+
+1. Build the native stack for that platform first (Linux:
+   `docker/linux/fetch-cef.sh` + `native/linux/build.sh`, or the bare-host
+   equivalent in `docker/linux/run-examples.sh`'s companion docs; Windows:
+   `native/win/build.sh`) — see the platform's own Phase 6/7 section in
+   `PLAN.md` for the full sequence.
+2. `bun link` at the repo root, then `bun link bunium` inside
+   `benchmark/bunium-minimal/` and `benchmark/bunium-mini-app/` (the
+   framework isn't published to npm).
+3. `npm install` inside `benchmark/electron-minimal/` and
+   `benchmark/electron-mini-app/` — Electron ships real prebuilt binaries
+   for both platforms, no extra config needed.
+4. `BENCH_REPS=5 BENCH_IDLE_SECONDS=6 bun run benchmark/scripts/report.ts`
+   from the repo root, same as macOS.
+
+**First real thing to check on Windows specifically:** whether
+`winSampleTree()`/`WIN_DESCENDANTS_CMD` in `bench.ts` (PowerShell
+`Get-CimInstance Win32_Process` for the process tree, `Get-Process`'s
+`WorkingSet64`/`CPU` properties for RSS/CPU-seconds) produce sane numbers
+at all — spot-check one manual run against Task Manager before trusting
+a full report. If PowerShell's per-invocation startup cost turns out to
+skew the idle-CPU sampling window (each `sampleTree()` call spawns a new
+`powershell.exe` process), that's a real thing to watch for and wasn't a
+concern on mac/Linux where `ps` is nearly instant.
+
+Once real numbers exist for a platform, fold them into this page and
+`benchmark/RESULTS.md` as their own columns (mirroring the existing
+bunium-vs-Electron layout) rather than replacing the macOS numbers —
+the three platforms aren't expected to match exactly (different Electron
+build, different OS scheduler behavior), so keep them side by side.
 
 ## Caveats
 

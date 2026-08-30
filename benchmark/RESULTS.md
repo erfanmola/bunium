@@ -39,31 +39,46 @@ BENCH_REPS=5 BENCH_IDLE_SECONDS=6 bun benchmark/scripts/report.ts
   over each framework's IPC primitive) and the main-process file differ.
   Runs an automatic 50-call IPC round-trip sweep on load.
 
-## Current results (2026-08-28, after reverting `--in-process-gpu`)
+## Current results (2026-08-31, after the idle-CPU fix)
 
 `--in-process-gpu` (merging Chromium's GPU service into the browser
 process) was shipped, then reverted per the user's explicit request —
 GPU stays in its own isolated OS process again. That was the change
 responsible for beating (not tying) process count and for mini-app RSS
-also beating Electron; both regress back with the revert. This table is
-the current, accurate state:
+also beating Electron; both regress back with the revert.
+
+This table is a fresh regenerate (`BENCH_REPS=5 BENCH_IDLE_SECONDS=6`,
+median of 5) after the idle-CPU fix below. **Idle CPU improved hugely as
+expected (~3-4% now, was 50-59%) — but RSS and process count on the
+minimal app moved unfavorably compared to the 2026-08-28 numbers above
+this line historically showed**, most likely environmental (this
+machine's background load was ~2.6 at measurement time, and
+`node_modules` for the Electron benchmark apps had just been freshly
+reinstalled after being cleared earlier in the session — neither ruled
+out nor confirmed as the cause). Not re-investigated further this
+session since it's outside what was asked; worth a re-run under quieter
+conditions before drawing conclusions about a regression:
 
 | metric | bunium-minimal | electron-minimal | bunium-mini-app | electron-mini-app | winner |
 |---|---|---|---|---|---|
 | framework/runtime on-disk size | 260M | 306M | — | — | **bunium** |
 | process boot (bare `-e "exit(0)"`) | 6.3ms (bun) | 36.6ms (node) | — | — | **bunium** |
-| idle RSS, minimal app (MB) | **403.2** | 418.5 | — | — | **bunium** |
-| process count (main + helpers) | 5 | 5 | 5 | 5 | tied |
-| idle RSS, mini-app (MB) | 467.2 | 450.9 | — | — | Electron |
-| process start → first paint (ms) | 302 | **160** | 329 | **194** | Electron |
-| idle CPU, full process tree (%) | 50-51 | **0** | 50-51 | **0** | Electron |
-| IPC round trip, avg of 50 (ms) | — | — | 2.6 | **0.5** | Electron |
-| mini-app DOM render, 200 rows (ms) | — | — | 0.9 | 1.0 | ~tied |
+| idle RSS, minimal app (MB) | 432.7 | **374.1** | — | — | Electron |
+| process count (main + helpers) | 5 | 4 | 5 | 4 | Electron |
+| idle RSS, mini-app (MB) | 501.0 | **408.0** | — | — | Electron |
+| process start → first paint (ms) | 305 | **159** | 335 | **196** | Electron |
+| idle CPU, full process tree (%) | **3.5** | **0** | **4.0** | **0.5** | Electron (near-closed) |
+| IPC round trip, avg of 50 (ms) | — | — | 4.5 | **0.5** | Electron |
+| mini-app DOM render, 200 rows (ms) | — | — | 1.0 | 1.0 | tied |
 
-**3 of 8 metrics beaten outright:** disk size, process boot, minimal-app
-RSS. **1 tied:** process count (was beaten outright with
-`--in-process-gpu`, see below — reverted). **4 remain behind:** mini-app
-RSS, startup time, idle CPU, IPC latency.
+**2 of 8 metrics beaten outright this run:** disk size, process boot.
+**1 tied:** DOM render. **5 behind:** minimal/mini-app RSS, process
+count, startup time, IPC latency — though **idle CPU's gap is now
+noise-level** (3.5-4.0% vs 0-0.5%) rather than the ~55-percentage-point
+gap every earlier round of this investigation measured. The
+RSS/process-count/IPC-latency regressions vs the 2026-08-28 numbers are
+flagged above as unconfirmed-cause and worth a clean re-run, not
+something this session root-caused.
 
 `--in-process-gpu` is documented below (what it did, why it was safe, why
 it was tried) since the investigation and the tradeoff reasoning are still
@@ -288,6 +303,77 @@ overhead rather than a bug.
    bootstrap-based CEF app" rather than something bunium's own code
    controls — but that conclusion should come from ruling out the
    profiler with certainty first, not assumed.
+
+### Round D: the real fix — `GatherProcessRequirementMetrics`, idle CPU 56-59% → ~3% (2026-08-30)
+
+Follow-up session picked up the three "concrete next steps" above. Rather
+than a full CEF-from-source rebuild (started, then abandoned once this
+was found — see below), the actual `StackSamplingProfiler` hypothesis was
+tested directly and ruled out: the exact Chromium command-line switch
+that disables it, `--disable-stack-profiler` (`chrome/common/profiler/
+thread_profiler_configuration.cc`'s `GenerateBrowserProcessConfiguration`,
+a plain switch check, distinct from and never tried alongside the
+`--disable-features=StackSamplingProfiler` attempted in Round A), was
+injected via `BUNIUM_CEF_SWITCHES` against the existing prebuilt CEF —
+**zero measured effect** (57.1% baseline vs 56.1% with the switch, i.e.
+noise). Root cause: `StackSamplingProfiler` really was ~28% of *task
+count* (Round C) but each sample is cheap — count share doesn't equal
+CPU-time share. `--disable-background-networking` (kills Sync/component-
+updater/safebrowsing-update/translate — all real, present in the Round C
+trace) was tried next, also **zero measured effect** (57.1% vs 56.1%).
+
+A fresh symbol-level `sample` capture (same UUID-matched-dSYM method as
+Round B, re-verified match) revealed the real culprit was still alive
+despite Round B's fix: a `ThreadPoolBackgroundWorker` thread's **entire**
+sampled window (100% of every sample tick across the whole capture) was
+inside `base::mac::ProcessRequirement::{ValidateProcess,GatherMetrics}`
+— the *exact same symbol* Round B supposedly eliminated. The two features
+Round B disabled (`MachPortRendezvousValidatePeerRequirements`/
+`EnforcePeerRequirements`) gate Mach-port-rendezvous peer validation
+specifically; `GatherMetrics()` is called from a **separate, independent**
+entry point, `ProcessRequirement::MaybeGatherMetrics()`
+(`base/mac/process_requirement.cc`), gated by its own feature —
+`"GatherProcessRequirementMetrics"`, `FEATURE_ENABLED_BY_DEFAULT` — that
+Round B's fix never touched. It exists purely to record
+`Mac.ProcessRequirement.*` UMA histograms (team ID / validation category
+/ code-signature check timing), i.e. Chrome-telemetry-only work with zero
+functional purpose for a non-metrics-reporting embedder — and in this
+dev environment (`bun run script.ts`, not a signed `.app` bundle) the
+underlying code-signature validation call apparently hangs/blocks for
+the process's entire lifetime on one worker thread.
+
+Verified via `BUNIUM_CEF_SWITCHES="--disable-features=GatherProcessRequirementMetrics"`
+against the live app (t=10-40s window, same methodology as every other
+idle-CPU measurement here): **59.4% → 3.0%**. Shipped as a third entry in
+`native/mac/bunium_common.h`'s `OnBeforeCommandLineProcessing`
+`disable-features` list (alongside the two Round B flags), rebuilt,
+re-verified with no env override (fix is unconditional now): **CPU time
+grew only 0.77s over a 30s window ≈ 2.6%**, matching. Full 37-example
+sweep still green after the change.
+
+**A partial CEF-from-source rebuild was attempted first this session**
+(to patch `ThreadProfilerClient` directly, since the `--disable-stack-
+profiler` switch test above hadn't happened yet) — `depot_tools` +
+Chromium synced successfully at the exact pinned commit
+(`be1e15d8892c064f0299ba18350236a9b272ce7f`, matching
+`vendor/cef-macosarm64` exactly) after working around two real sandbox
+network quirks (`gclient`'s hermetic-python CIPD bootstrap 403s here —
+bypass via `VPYTHON_BYPASS` env var; `depot_tools/gsutil.py`'s own
+bootstrap hits a *different* blocked host, `www.googleapis.com`, fixed by
+patching it to skip that metadata call and hit `storage.googleapis.com`
+directly). **Abandoned once the switch test proved the underlying fix
+wouldn't have helped anyway** — the real driver was `GatherMetrics`, not
+`ThreadProfiler`. The synced source tree is a reusable asset for any
+future from-source CEF patching (env vars and gotchas fully documented,
+see project memory `project_bunium_cef_source_build.md`), but wasn't
+needed for this fix.
+
+**Updated ceiling:** with idle CPU now ~3% (was the dominant behind-
+Electron metric across two full investigation sessions), IPC latency and
+startup time are the only metrics with real remaining gaps — both
+previously root-caused with no lever found (IPC: inherent multi-process
+Mojo dispatch cost; startup: `CefInitialize()` itself). Mini-app RSS
+remains behind but untouched by this investigation.
 
 ## What was tried on startup time
 

@@ -4,6 +4,7 @@
 // Electron concurrently alongside would skew the CPU/RSS numbers anyway),
 // takes the median of each numeric field, and writes both raw JSON and a
 // markdown table to benchmark/results/.
+import { createRequire } from "node:module";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { runOnce } from "./bench";
 
@@ -18,6 +19,16 @@ interface Scenario {
   cmd: string[];
 }
 
+// The `electron` npm package's main export is a string: the path to the
+// real platform-specific binary (.exe on Windows, no `.bin/electron` shim
+// involved) -- this is the documented cross-platform way to launch it
+// from another Node/Bun process, and avoids Windows needing `shell: true`
+// to run a `.bin/electron.cmd` shim.
+function resolveElectronBinary(cwd: string): string {
+  const require = createRequire(`${cwd}/`);
+  return require("electron") as unknown as string;
+}
+
 const scenarios: Scenario[] = [
   {
     label: "bunium-minimal",
@@ -27,7 +38,7 @@ const scenarios: Scenario[] = [
   {
     label: "electron-minimal",
     cwd: `${REPO}benchmark/electron-minimal`,
-    cmd: ["./node_modules/.bin/electron", "."],
+    cmd: [resolveElectronBinary(`${REPO}benchmark/electron-minimal`), "."],
   },
   {
     label: "bunium-mini-app",
@@ -37,7 +48,7 @@ const scenarios: Scenario[] = [
   {
     label: "electron-mini-app",
     cwd: `${REPO}benchmark/electron-mini-app`,
-    cmd: ["./node_modules/.bin/electron", "."],
+    cmd: [resolveElectronBinary(`${REPO}benchmark/electron-mini-app`), "."],
   },
 ];
 

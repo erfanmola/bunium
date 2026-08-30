@@ -2045,8 +2045,9 @@ Verified after every change: 37/37 `examples/*.ts`, 6/6
       RSS still wins — that one's carried by the spare-renderer disable,
       not the GPU merge). Current standing: **3 of 8 metrics beaten
       outright** (disk size, Bun-vs-Node boot, minimal-app RSS), 1 tied
-      (process count), 4 behind (mini-app RSS, startup, idle CPU, IPC
-      latency). The `--in-process-gpu` investigation and safety reasoning
+      (process count), 3 behind (mini-app RSS, startup, IPC latency —
+      idle CPU fixed in Round D2 below). The `--in-process-gpu`
+      investigation and safety reasoning
       (verified clean, safer than `--single-process`) stay documented in
       `benchmark/RESULTS.md` since they're still real findings, just not a
       shipped default.
@@ -2091,14 +2092,32 @@ Verified after every change: 37/37 `examples/*.ts`, 6/6
       `chrome/common/stack_sampling_configuration.*` (the file that
       decides whether it runs) 404/403'd on both
       `chromium.googlesource.com` and `source.chromium.org` this
-      session — identified, not yet fixed. **Real, scoped next step:** a
-      full local Chromium checkout (sparse checkouts don't work well
-      against Chromium's monorepo tooling) or a patched-from-source CEF
-      build with the profiler's enable-check forced off, verified against
-      the same dSYM + Perfetto methodology (both fully reusable, commands
-      in `benchmark/RESULTS.md`). Full trace-query breakdown table (Mojo/
-      IPC dispatch ~29%, `KeyedServiceFactory`, real SQLite `Database::*`
-      activity) also in `benchmark/RESULTS.md`.
+      session — identified, not yet fixed. Full trace-query breakdown
+      table (Mojo/IPC dispatch ~29%, `KeyedServiceFactory`, real SQLite
+      `Database::*` activity) in `benchmark/RESULTS.md`.
+- [x] **Idle CPU, Round D2 (follow-up session, 2026-08-30): the real fix,
+      56-59%→~3%.** Tested the `StackSamplingProfiler` hypothesis directly
+      via the real command-line switch (`--disable-stack-profiler`,
+      distinct from the feature-flag form already ruled out) against the
+      existing prebuilt CEF — zero measured effect; task-count share
+      (~28%) didn't translate to CPU-time share. Same null result for
+      `--disable-background-networking`. A fresh symbolicated `sample`
+      capture found the real culprit: `base::mac::ProcessRequirement::
+      {ValidateProcess,GatherMetrics}` again — same symbol as Round D's
+      fix, but reached via a *different*, independent entry point
+      (`MaybeGatherMetrics()`) gated by a *third* feature Round D never
+      touched: `GatherProcessRequirementMetrics` (pure UMA telemetry, no
+      functional purpose for a non-metrics-reporting embedder). Verified
+      59.4%→3.0% via the switch, then shipped as a third
+      `disable-features` entry in `bunium_common.h`, rebuilt, reconfirmed
+      with no env override (~2.6%), 37/37 examples green. Full writeup:
+      `benchmark/RESULTS.md` Round D, memory `project_bunium_idle_cpu_fixed`.
+      A full CEF-from-source rebuild was started first (to patch
+      `ThreadProfilerClient` directly) and got as far as a complete,
+      exact-commit-matched Chromium sync — abandoned once the switch test
+      proved that particular patch wouldn't have helped; the synced tree
+      is kept as a reusable asset (`project_bunium_cef_source_build`
+      memory) for any future from-source CEF need.
 - [ ] **Startup time (~300-330ms vs Electron's ~160-200ms, unchanged) — no
       bunium-specific inefficiency found, investigated twice.** Every
       window-creation FFI call is a single synchronous native call with no

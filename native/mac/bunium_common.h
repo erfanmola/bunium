@@ -734,12 +734,24 @@ public:
     // against the vendored framework, see PLAN.md/benchmark/RESULTS.md for the
     // full methodology): a ThreadPoolForegroundWorker thread spent its entire
     // sampled window inside
-    // base::mac::ProcessRequirement::{ValidateProcess,GatherMetrics}, which
-    // disappeared from the profile entirely once these were disabled.
+    // base::mac::ProcessRequirement::{ValidateProcess,GatherMetrics}.
+    // The real dominant idle-CPU driver turned out to be a SEPARATE feature,
+    // "GatherProcessRequirementMetrics" (base/mac/process_requirement.cc,
+    // FEATURE_ENABLED_BY_DEFAULT) -- it independently calls the exact same
+    // ValidateProcess/GatherMetrics code path purely to record
+    // Mac.ProcessRequirement.* UMA histograms, regardless of the two
+    // Mach-port-rendezvous flags above. In this dev (unbundled `bun run`,
+    // not a signed .app) environment that code-signature validation call
+    // hangs for the entire process lifetime on one ThreadPoolBackgroundWorker
+    // thread -- confirmed via a fresh symbolicated `sample` capture showing
+    // the thread's ENTIRE sampled window inside ValidateProcess/GatherMetrics
+    // again despite the two flags above already being disabled. Disabling
+    // this one flag measured idle CPU 59.4% -> 3.0% (benchmark/RESULTS.md).
     std::string disable_features =
         "SpareRendererForSitePerProcess,"
         "MachPortRendezvousValidatePeerRequirements,"
-        "MachPortRendezvousEnforcePeerRequirements";
+        "MachPortRendezvousEnforcePeerRequirements,"
+        "GatherProcessRequirementMetrics";
     if (command_line->HasSwitch("disable-features")) {
       std::string existing = command_line->GetSwitchValue("disable-features").ToString();
       if (!existing.empty())
