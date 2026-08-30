@@ -6,12 +6,18 @@ import { mkdirSync, writeFileSync } from "node:fs";
 // takes the median of each numeric field, and writes both raw JSON and a
 // markdown table to benchmark/results/.
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { runOnce } from "./bench";
 
 const REPS = Number(process.env.BENCH_REPS ?? 3);
 const IDLE_SECONDS = Number(process.env.BENCH_IDLE_SECONDS ?? 6);
 
-const REPO = new URL("../..", import.meta.url).pathname;
+// `new URL(...).pathname` yields a POSIX-style path (leading `/`,
+// %-encoded spaces) even on Windows -- passing that straight to
+// child_process.spawn's `cwd` breaks Windows' CreateProcess PATH search
+// entirely (even a plain `bun` on PATH fails to resolve with ENOENT).
+// fileURLToPath gives the real platform-native path (`C:\...`, decoded).
+const REPO = fileURLToPath(new URL("../..", import.meta.url));
 
 interface Scenario {
   label: string;

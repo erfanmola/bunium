@@ -179,6 +179,51 @@ Raw per-rep JSON: `benchmark/results/raw.json` / `benchmark/results/
 summary.json` from this run (regenerated in place, not versioned — rerun
 `report.ts` to reproduce).
 
+## Windows results (2026-08-31, x86_64, bare host, first real run)
+
+First real run of this harness on Windows (Windows 11 Pro 26200, Intel
+i5-14600K, Git Bash/MSYS2). CEF `windows64` distro + `native/win/build.sh`
+(clang-cl), `bun link` for the bunium apps, real `npm install` for the
+Electron apps. `BENCH_REPS=5 BENCH_IDLE_SECONDS=6`, 20/20 reps clean.
+On-disk size uses the packaged/trimmed `dist-app/` output
+(`packaging/win/package.sh --verify`, 542M, passed its own pixel-check --
+first real-Windows verification of the packaging pipeline).
+
+| metric | bunium-minimal | electron-minimal | bunium-mini-app | electron-mini-app | winner |
+|---|---|---|---|---|---|
+| framework/runtime on-disk size (packaged) | 542M | 367M | -- | -- | Electron |
+| process boot (bare `-e "exit(0)"`, median of 10) | 60ms (bun) | **48ms (node)** | -- | -- | Electron |
+| process start -> first paint (ms) | **149** | 188 | **160** | 189 | **bunium** |
+| idle RSS (MB) | 578.6 | **287.2** | 609.7 | **309.1** | Electron |
+| process count (main + helpers) | 5 | **4** | 5 | **4** | Electron |
+| idle CPU, full process tree (%) | **0** | **0** | **0** | **0** | tied |
+| IPC round trip, avg of ~50 (ms) | -- | -- | 10.4 | **0.2** | Electron |
+| mini-app DOM render, 200 rows (ms) | -- | -- | 1.1 | 1.0 | tied |
+
+**Shape differs from mac/Linux:** bunium wins startup/paint time outright
+here (unique to Windows); RSS/process count/IPC latency favor Electron
+(same direction as mac); idle CPU is a 0%/0% tie (same shared
+`disable-features` flags, compiled in via `native/win/build.sh`'s
+shared-sources recipe). **Real finding: `bun` boots slower than `node`
+on this host** (60ms vs 48ms median) -- opposite of mac's ~5.8x bun win,
+not investigated further (Bun's own startup cost, not a bunium code
+path).
+
+**Two real bugs found and fixed getting this run working:**
+
+1. `benchmark/shared/{app.js,index.html}` are Git symlinks that check out
+   as broken placeholder text files on Windows (`core.symlinks=false`
+   default) -- not a code bug, worked around by copying the real files
+   over the placeholders.
+2. **`benchmark/scripts/report.ts`'s `REPO` path was a real bug, fixed.**
+   `new URL("../..", import.meta.url).pathname` returns a POSIX-style
+   path on Windows (leading `/`, `%20`-encoded spaces) -- passed as `cwd`
+   to `child_process.spawn`, this broke Windows' `CreateProcess` PATH
+   search entirely, so even `spawn("bun", ...)` failed with `ENOENT`
+   despite `bun.exe` being on `PATH`. Fixed with
+   `fileURLToPath(new URL("../..", import.meta.url))`. Would have
+   silently broken the harness for any future from-scratch Windows run.
+
 ## What actually shipped (verified: 37/37 examples, 6/6 scaffolds, every commit)
 
 1. **Adaptive CEF message pump** (`external_message_pump` +

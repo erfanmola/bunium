@@ -2253,6 +2253,23 @@ Verified after every change: 37/37 `examples/*.ts`, 6/6
       packaging-verify and release-artifacts-verify scripts all still
       PASS.
 
+## Post-Phase-11 — benchmark suite verified on Windows (2026-08-31)
+
+- [x] Ran `benchmark/` for real on Windows (Windows 11 Pro, i5-14600K,
+      Git Bash/MSYS2), `BENCH_REPS=5 BENCH_IDLE_SECONDS=6`, 20/20 reps
+      clean. Also verified `packaging/win/package.sh --verify` end-to-end
+      (542M package, `PACKAGED_APP_VERIFY:PASS`). Full numbers in
+      `benchmark/RESULTS.md`'s Windows section: bunium wins paint time,
+      idle CPU ties, Electron wins RSS/process-count/IPC latency. Bare
+      `bun` process boot is *slower* than `node` here (60ms vs 48ms) —
+      opposite of macOS.
+- [x] Fixed two Windows bugs found while setting up the harness:
+      `benchmark/shared/{app.js,index.html}` check out as broken symlink
+      placeholders on Windows (`core.symlinks=false`), and
+      `benchmark/scripts/report.ts` used `URL.pathname` for the repo
+      path, which is POSIX-style even on Windows and broke
+      `child_process.spawn`'s PATH search — fixed with `fileURLToPath`.
+
 ---
 
 **Naming:** `bunium`, confirmed by user.
