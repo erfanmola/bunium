@@ -19,6 +19,34 @@ const IDLE_SECONDS = Number(process.env.BENCH_IDLE_SECONDS ?? 6);
 // fileURLToPath gives the real platform-native path (`C:\...`, decoded).
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
 
+// Warns (doesn't block) if the platform's compiled native/build*/
+// bunium_shim.* predates its own sources -- exactly the bug found while
+// re-verifying the IPC-latency wake-socket fix on Linux (2026-08-31, see
+// benchmark/RESULTS.md): a stale checked-in-or-cached .so silently ran
+// old native code under an otherwise-clean benchmark run. That incident
+// happened to fail loudly (a missing FFI symbol crashed the process); a
+// signature-compatible but behaviorally-stale rebuild would not have.
+function warnIfNativeStale(): void {
+  const platform =
+    process.platform === "darwin"
+      ? "mac"
+      : process.platform === "win32"
+        ? "win"
+        : "linux";
+  const result = Bun.spawnSync([
+    `${REPO}scripts/check-native-freshness.sh`,
+    platform,
+  ]);
+  if (result.exitCode !== 0) {
+    console.error(result.stdout.toString());
+    console.error(result.stderr.toString());
+    console.error(
+      `WARNING: native build for ${platform} may be stale -- benchmark numbers below may not reflect the current source tree. Run \`bun run check:native:${platform} -- --fix\` or rebuild manually.`,
+    );
+  }
+}
+warnIfNativeStale();
+
 interface Scenario {
   label: string;
   cwd: string;

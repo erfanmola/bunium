@@ -146,8 +146,12 @@ as-is. Full results in `benchmark/RESULTS.md`'s "Linux results" section —
 short version: bunium wins paint time/RSS/process-count outright on this
 run (opposite of the mac shape, where Electron wins those), idle CPU is a
 genuine 0%/0% tie (confirming the mac idle-CPU fix's `disable-features`
-flags are live on Linux too), IPC latency still favors Electron. One real
-One thing worth knowing before deploying a bunium app under a process
+flags are live on Linux too). IPC latency initially still favored
+Electron on that first pass, but that measured a stale pre-wake-socket
+build -- rebuilding with the fix (2026-08-31, see `benchmark/RESULTS.md`'s
+Linux IPC section) brought it from 2.9ms down to 0.8ms, inside Electron's
+own noise band, matching the mac/Windows result. One thing worth knowing
+before deploying a bunium app under a process
 supervisor on Linux: sending `SIGTERM` to the **whole process group**
 (GNU `timeout`'s default behavior without `--foreground`, and systemd's
 default `KillMode=control-group`) triggers a noisy Chromium shutdown
@@ -206,10 +210,14 @@ order-of-magnitude signals and the RSS/process-count flips (structural,
 not timing-noise-prone), but startup time is only accurate to ~10-20%. The
 idle-CPU episode above is a concrete demonstration of why short sampling
 windows on this metric are untrustworthy specifically — always sample past
-any possible delayed-onset behavior. macOS arm64 only; the shipped native
-changes live in shared code compiled into the Linux/Windows builds too, so
-those platforms should inherit the RSS/IPC-latency improvements once
-rebuilt there, but this wasn't verified on those platforms. The Electron
+any possible delayed-onset behavior. Originally macOS arm64 only; the
+shipped native changes live in shared code compiled into the Linux/
+Windows builds too. The RSS/process-count/idle-CPU wins are confirmed on
+both other platforms now. IPC latency's wake-socket fix is confirmed on
+Linux too (see above) but Windows has no AF_UNIX implementation yet
+(`bunium_set_wake_socket_path` is a no-op there) — its numbers above still
+reflect the older timer-only pump, not this fix; WinSock2 `afunix.h`
+support remains a documented next step in `benchmark/RESULTS.md`. The Electron
 mini-app uses `nodeIntegration: true, contextIsolation: false` for an
 IPC-shape comparable to bunium's single-hop channel — a production
 Electron app would add a `contextBridge` preload hop with its own small

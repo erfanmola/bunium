@@ -38,6 +38,9 @@
   "scripts": {
     "build:native:mac": "native/mac/build.sh",
     "build:native:linux": "native/linux/build.sh",
+    "check:native:mac": "scripts/check-native-freshness.sh mac",
+    "check:native:linux": "scripts/check-native-freshness.sh linux",
+    "check:native:win": "scripts/check-native-freshness.sh win",
     "pack:mac": "packaging/mac/package.sh",
     "pack:win": "packaging/win/package.sh",
     "pack:linux": "packaging/linux/package.sh",

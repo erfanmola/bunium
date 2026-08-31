@@ -179,6 +179,55 @@ Raw per-rep JSON: `benchmark/results/raw.json` / `benchmark/results/
 summary.json` from this run (regenerated in place, not versioned — rerun
 `report.ts` to reproduce).
 
+## Linux IPC latency re-verified with the wake-socket fix (2026-08-31, same x86_64 host)
+
+The Linux numbers above predate the wake-socket fix (see "IPC latency,
+round 3" below) -- native/build-linux's checked-in-at-the-time
+bunium_shim.so was built before that commit, so the run above measured
+the old timer-only pump on Linux even though the mac/Windows sections
+already reflect the fix. Confirmed via nm -D: the stale .so was missing
+bunium_set_wake_socket_path entirely (bun:ffi threw a Symbol-not-found
+error on startup -- a hard, loud failure, not a silent fallback, since
+native.ts declares the symbol unconditionally). Rebuilt via
+native/linux/build.sh (same shared bunium_shim.cpp/bunium_common.h as
+mac/Windows, no Linux-specific changes needed) and re-ran the full
+report:
+
+| metric | bunium-minimal | electron-minimal | bunium-mini-app | electron-mini-app | winner |
+|---|---|---|---|---|---|
+| process start to first paint (ms) | 103 | 345 | 106 | 354 | bunium |
+| idle RSS (MB) | 696.9 | 763.8 | 732.8 | 827.5 | bunium |
+| process count (main + helpers) | 7 | 11 | 7 | 11 | bunium |
+| idle CPU, full process tree (%) | 0 | 0 | 0 | 0 | tied |
+| IPC round trip, avg of ~50 (ms) | - | - | 0.8 | 0.5 | Electron (noise-level) |
+| mini-app DOM render, 200 rows (ms) | - | - | 1.1 | 1.1 | tied |
+
+BENCH_REPS=5 BENCH_IDLE_SECONDS=6, 20/20 reps clean, real X11 (DISPLAY=:0,
+no Xvfb). IPC latency: 2.9ms to 0.8ms, the same order-of-magnitude win as
+mac (4.5ms to ~0.3-0.7ms) and Windows, and now inside Electron's own
+run-to-run noise band on this host (0.5ms), same as the other two
+platforms. Verified the fix is actually exercising the new path (not just
+faster by coincidence) via BUNIUM_IPC_DIAG=1: native's browser_wake_write
+to JS's js_wake_socket_data checkpoints landed 5-40us apart throughout a
+real run, matching the ~30-40us median the mac repro found before
+shipping. Re-ran the full 36/36 Linux examples sweep
+(docker/linux/run-examples.sh, real X not Xvfb-in-container) after the
+rebuild -- all still green, no regressions from the rebuilt .so.
+Everything else (paint time, RSS, process count, idle CPU) is unchanged
+from the run above, as expected -- this fix only touches IPC wake timing.
+
+Follow-up for whoever next touches native/build-linux: this stale-binary
+gap means the checked-in dev-tree build artifacts under
+native/build-linux (and presumably native/build for mac, native/build-win
+for Windows, if those are ever committed rather than built fresh) can
+silently drift behind native/*/bunium_shim.cpp source changes -- bun:ffi's
+dlopen failure here was loud (missing symbol, process crash on startup),
+which is the good case; a signature-compatible but behaviorally-stale
+symbol would have failed silently instead. Worth considering a
+build-freshness check (comparing source mtime vs .so mtime, or just always
+rebuilding native before any benchmark/smoke run) as a follow-up, not done
+this session.
+
 ## Windows results (2026-08-31, x86_64, bare host, first real run)
 
 First real run of this harness on Windows (Windows 11 Pro 26200, Intel

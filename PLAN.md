@@ -2319,6 +2319,53 @@ arriving mid-wait still sat until that timer fired.
       implementation, Linux verification, first-call artifact) in
       `benchmark/RESULTS.md`.
 
+## Post-Phase-11 — IPC latency fix verified on Linux (2026-08-31)
+
+- [x] **Rebuilt and re-measured the wake-socket fix on real Linux
+      hardware (same x86_64 bare-metal host as the earlier Linux
+      verification pass).** The `native/build-linux/bunium_shim.so` left
+      over from that earlier session predated the wake-socket commit --
+      `bun:ffi` failed loudly on startup (`Symbol
+      "bunium_set_wake_socket_path" not found`), confirmed via `nm -D`
+      that the symbol was genuinely missing from the stale `.so`. Rebuilt
+      via `native/linux/build.sh` (no source changes needed -- Linux
+      already compiles the shared `native/mac/bunium_shim.cpp` /
+      `bunium_common.h` unmodified, same file the mac/Windows fix
+      shipped in). **Result: IPC round-trip avg 2.9ms → 0.8ms**, matching
+      mac's and Windows' order-of-magnitude win and landing inside
+      Electron's own noise band on this host (0.5ms). Verified the wake
+      path is actually firing (not a coincidental speedup) via
+      `BUNIUM_IPC_DIAG=1`: `browser_wake_write` → `js_wake_socket_data`
+      checkpoints measured 5-40us apart, matching the pre-ship repro
+      number. Re-ran the full Linux examples sweep after the rebuild:
+      36/36 clean (the one permanent mac-only skip aside), no
+      regressions. Full numbers and updated table in
+      `benchmark/RESULTS.md`'s new Linux IPC section. Windows AF_UNIX
+      support and the first-IPC-call startup artifact remain open, as
+      before.
+- [x] **New `scripts/check-native-freshness.sh`** closes the stale-
+      binary gap that caused the above: compares `native/mac/
+      bunium_shim.cpp`/`bunium_common.h`/`subprocess_main.cpp`/
+      `bunium_bsdiff_wrap.mm` (the shared sources every platform compiles
+      unmodified) plus each platform's own sources against its compiled
+      `native/build*/bunium_shim.{dylib,so,dll}` mtime; `--fix` rebuilds
+      via the platform's own `native/<platform>/build.sh` automatically.
+      `bun run check:native:{mac,linux,win}` package.json shortcuts
+      added. Wired in two places as a non-blocking warning (never fails a
+      run outright -- a stale build might be intentional, e.g. bisecting):
+      `docker/linux/run-examples.sh` (so the smoke sweep flags it before
+      36 examples run against possibly-stale native code) and
+      `benchmark/scripts/report.ts` (so a benchmark run flags it before
+      producing numbers that don't reflect the current source tree --
+      exactly the report this incident's original numbers came from).
+      Verified end to end on this Linux host: fresh build reports FRESH
+      and both entry points stay silent; `touch`-ing
+      `native/mac/bunium_shim.cpp` makes both correctly print the
+      staleness warning without blocking the run, and `--fix` rebuilds
+      and clears it. Not wired into mac/Windows CI (no code changes
+      needed there -- same script, `mac`/`win` arg already supported --
+      just not exercised on real mac/Windows hardware this session).
+
 ---
 
 **Naming:** `bunium`, confirmed by user.

@@ -8,6 +8,14 @@ set -uo pipefail
 
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# Warn (don't fail -- CI always rebuilds fresh right before this runs, and
+# local dev may legitimately be testing an intentionally-pinned build) if
+# native/build-linux/bunium_shim.so predates its own sources. Catches the
+# exact class of bug found during the IPC-latency Linux re-verification
+# (2026-08-31, see benchmark/RESULTS.md): a stale checked-in-or-cached .so
+# silently running old native code under a passing-looking smoke sweep.
+scripts/check-native-freshness.sh linux || echo "WARNING: native/build-linux/bunium_shim.so may be stale -- see above. Continuing anyway." >&2
+
 Xvfb :99 -screen 0 1024x768x24 >/tmp/xvfb.log 2>&1 &
 XVFB_PID=$!
 sleep 1
