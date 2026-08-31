@@ -33,10 +33,14 @@ function warnIfNativeStale(): void {
       : process.platform === "win32"
         ? "win"
         : "linux";
-  const result = Bun.spawnSync([
-    `${REPO}scripts/check-native-freshness.sh`,
-    platform,
-  ]);
+  // Windows' uv_spawn can't exec a .sh shebang script directly (EFTYPE) --
+  // needs bash explicitly, unlike mac/Linux where the shebang line alone
+  // is enough.
+  const result = Bun.spawnSync(
+    process.platform === "win32"
+      ? ["bash", `${REPO}scripts/check-native-freshness.sh`, platform]
+      : [`${REPO}scripts/check-native-freshness.sh`, platform],
+  );
   if (result.exitCode !== 0) {
     console.error(result.stdout.toString());
     console.error(result.stderr.toString());

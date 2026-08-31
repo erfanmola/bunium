@@ -20,6 +20,12 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+// Windows 10 1803+/Windows 11 ship a real AF_UNIX (afunix.h, Winsock2) --
+// same wake-socket design as mac/Linux below, just Winsock-flavored calls
+// (SOCKET/closesocket/ioctlsocket instead of fd/close/fcntl). Requires
+// ws2_32.lib (linked in native/win/build.sh) and one-time WSAStartup.
+#include <winsock2.h>
+#include <afunix.h>
 #endif
 
 #include "bunium_common.h"
@@ -77,18 +83,47 @@ static CefRefPtr<BuniumApp> g_app;
 // the same kind of minimal repro to deliver `data` in ~30-40us median
 // (200-sample repro, well under the 1ms target) -- and native just
 // `connect()`s to it as a plain client and writes wake bytes.
-// g_wake_write_fd is that client socket, written from BuniumWakeJs()
-// (called from CEF's UI thread) after `bunium_set_wake_socket_path`
-// connects it (called once from src/app.ts right after its Bun.listen()
-// server is up). Windows has no widely-supported AF_UNIX story in this
-// codebase yet -- `bunium_set_wake_socket_path` is a no-op returning 0
-// there, and the JS side falls back to the pre-existing timer-only pump
-// unchanged (safe either way: BuniumWakeJs() below no-ops if the fd was
-// never set).
+// g_wake_write_fd/g_wake_write_sock is that client socket, written from
+// BuniumWakeJs() (called from CEF's UI thread) after
+// `bunium_set_wake_socket_path` connects it (called once from src/app.ts
+// right after its Bun.listen() server is up). Windows 10 1803+/Windows 11
+// support AF_UNIX (afunix.h) with the same sockaddr_un shape as POSIX, so
+// this now works unmodified there too -- only the socket handle type
+// (SOCKET vs int) and a handful of Winsock call names differ, isolated to
+// the two #if defined(_WIN32) branches below. Either platform degrades
+// safely if the connect fails for any reason (older Windows without
+// AF_UNIX, sandboxed environment, etc.): `bunium_set_wake_socket_path`
+// returns 0 and the JS side falls back to the pre-existing timer-only pump
+// unchanged (BuniumWakeJs() below no-ops if the handle was never set).
+#if defined(_WIN32)
+static SOCKET g_wake_write_sock = INVALID_SOCKET;
+// Winsock needs one-time WSAStartup before any socket() call succeeds;
+// guarded so bunium_set_wake_socket_path can be called defensively without
+// double-initializing (WSAStartup itself is refcounted/idempotent per MSDN,
+// but this avoids the WSADATA out-param dance more than once).
+static bool g_wsa_started = false;
+static void BuniumEnsureWsaStarted() {
+  if (g_wsa_started)
+    return;
+  WSADATA wsa_data;
+  if (WSAStartup(MAKEWORD(2, 2), &wsa_data) == 0)
+    g_wsa_started = true;
+}
+#else
 static int g_wake_write_fd = -1;
+#endif
 
 static void BuniumWakeJs() {
-#if !defined(_WIN32)
+#if defined(_WIN32)
+  if (g_wake_write_sock == INVALID_SOCKET)
+    return;
+  BuniumIpcDiagLog("browser_wake_write", "browser");
+  char byte = 1;
+  // Nonblocking, best-effort: WSAEWOULDBLOCK means a wake is already in
+  // flight (socket buffer has an unread byte pending) -- nothing to do.
+  // Never let this block or fail loudly on CEF's UI thread.
+  send(g_wake_write_sock, &byte, 1, 0);
+#else
   if (g_wake_write_fd < 0)
     return;
   BuniumIpcDiagLog("browser_wake_write", "browser");
@@ -104,14 +139,42 @@ static void BuniumWakeJs() {
 #endif
 }
 
-// Connects g_wake_write_fd to the Unix domain socket src/app.ts is
-// already listening on (via Bun.listen({unix: path})) by the time this is
-// called. Returns 1 on success, 0 if unsupported (Windows) or the connect
-// failed for any reason (stale/missing path, permissions) -- either way
-// BuniumWakeJs() above degrades to a safe no-op and the pre-existing
-// timer-only pump keeps working exactly as before this feature existed.
+// Connects g_wake_write_fd/g_wake_write_sock to the Unix domain socket
+// src/app.ts is already listening on (via Bun.listen({unix: path})) by the
+// time this is called. Returns 1 on success, 0 if the connect failed for
+// any reason (stale/missing path, permissions, no AF_UNIX support on this
+// Windows build) -- either way BuniumWakeJs() above degrades to a safe
+// no-op and the pre-existing timer-only pump keeps working exactly as
+// before this feature existed.
 extern "C" BUNIUM_EXPORT int32_t bunium_set_wake_socket_path(const char *path) {
-#if !defined(_WIN32)
+#if defined(_WIN32)
+  // Windows 10 1803+/Windows 11 support AF_UNIX (afunix.h) with the same
+  // sockaddr_un shape as POSIX -- only the socket handle type (SOCKET, not
+  // int) and a few call names (closesocket/ioctlsocket/WSAGetLastError
+  // instead of close/fcntl/errno) differ from the POSIX branch above.
+  BuniumEnsureWsaStarted();
+  SOCKET sock = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (sock == INVALID_SOCKET)
+    return 0;
+  struct sockaddr_un addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  strncpy_s(addr.sun_path, sizeof(addr.sun_path), path, _TRUNCATE);
+  if (connect(sock, reinterpret_cast<struct sockaddr *>(&addr),
+              sizeof(addr)) != 0) {
+    closesocket(sock);
+    return 0;
+  }
+  u_long non_blocking = 1;
+  ioctlsocket(sock, FIONBIO, &non_blocking);
+  g_wake_write_sock = sock;
+  // Warm-up ping -- see the POSIX branch's comment below for why (first
+  // wake on a fresh connection measured a one-time latency spike in the
+  // mac/Linux repro; sending one immediately keeps the cost off the first
+  // *real* wake instead).
+  BuniumWakeJs();
+  return 1;
+#else
   int fd = socket(AF_UNIX, SOCK_STREAM, 0);
   if (fd < 0)
     return 0;
@@ -137,9 +200,6 @@ extern "C" BUNIUM_EXPORT int32_t bunium_set_wake_socket_path(const char *path) {
   // steady-state latency this fix targets.
   BuniumWakeJs();
   return 1;
-#else
-  (void)path;
-  return 0;
 #endif
 }
 

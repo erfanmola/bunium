@@ -28,5 +28,5 @@ compile "$OUT/dbg_bsdiff.obj" "$ROOT/native/mac/bunium_bsdiff_wrap.mm" /TP "${FL
   "$OUT/dbg_shim.obj" "$OUT/dbg_win.obj" "$OUT/dbg_sys.obj" \
   "$OUT/dbg_bsdiff.obj" "$OUT/dbg_bsdiff_c.obj" "$OUT/dbg_bspatch_c.obj" \
   "$WRAP" "$CEF/Release/libcef.lib" user32.lib gdi32.lib dwmapi.lib \
-  shell32.lib ole32.lib
+  shell32.lib ole32.lib ws2_32.lib
 echo "BUILT $OUT/bunium_shim_dbg.dll"

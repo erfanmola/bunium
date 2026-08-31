@@ -1,7 +1,28 @@
 import { dlopen, FFIType, type Pointer } from "bun:ffi";
+import { dirname } from "node:path";
 import { paths } from "./paths";
 
 export { paths };
+
+// Windows-only: bunium_shim.dll depends on libcef.dll and other DLLs that
+// live alongside it (native/build/ in dev, shim/ in a packaged app). Unlike
+// dlopen() on mac/Linux (which honors rpath/@loader_path baked in at link
+// time), Windows' LoadLibrary only searches the DLL's own directory
+// automatically if the process's CWD happens to be that directory --
+// otherwise it fails with "error 126" (module not found) even though the
+// file exists, because it can't resolve the DLL's *dependencies*. Call
+// SetDllDirectoryW to add the shim's directory to the search path before
+// dlopen() below. See native/win/bringup_test.c for the same fix applied to
+// a plain C LoadLibraryW bring-up test -- this mirrors it for bun:ffi.
+if (process.platform === "win32") {
+  const kernel32 = dlopen("kernel32.dll", {
+    SetDllDirectoryW: { args: [FFIType.ptr], returns: FFIType.i32 },
+  });
+  const dir = dirname(paths.shim);
+  const wide = Buffer.from(`${dir}\0`, "utf16le");
+  kernel32.symbols.SetDllDirectoryW(wide);
+  kernel32.close();
+}
 
 // Per-app CEF profile dir. Empty for dev (CEF keeps its shared default
 // profile, so dev behavior is unchanged); packaged launchers set it to a

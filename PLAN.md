@@ -2366,6 +2366,55 @@ arriving mid-wait still sat until that timer fired.
       needed there -- same script, `mac`/`win` arg already supported --
       just not exercised on real mac/Windows hardware this session).
 
+## Post-Phase-11 — IPC latency, Windows AF_UNIX implementation (2026-08-31)
+
+- [x] **Implemented the Windows half of the wake-socket fix**, closing the
+      gap flagged in round 3 (`bunium_set_wake_socket_path` was a no-op
+      returning 0 on `_WIN32`). Windows 10 1803+/Windows 11 support
+      `AF_UNIX` via `afunix.h` (Winsock2) with the same `sockaddr_un`
+      shape as POSIX, so `native/mac/bunium_shim.cpp` (shared source,
+      compiled unmodified by all three platforms) now has a real
+      `#if defined(_WIN32)` branch alongside the POSIX one -- same
+      `socket()`/`connect()` design, Winsock-flavored calls
+      (`SOCKET`/`closesocket`/`ioctlsocket`/`send` instead of
+      `int`/`close`/`fcntl`/`write`), plus a one-time `WSAStartup`.
+      `ws2_32.lib` added to `native/win/build.sh` and `build_debug.sh`'s
+      link lines. Verified for real on Windows (i5-14600K/Windows 11 Pro):
+      an isolated `Bun.listen({unix})` + direct FFI repro confirmed the
+      connect/warm-up-ping/`data`-delivery path works end to end before
+      trusting it in the full app (same discipline the round-2 false-
+      positive taught); `examples/basic-window.ts` with
+      `BUNIUM_IPC_DIAG=1` then confirmed `browser_wake_write` ->
+      `js_wake_socket_data` checkpoints landing 20-80us apart, matching
+      the mac/Linux order-of-magnitude win. `native/win/build.sh` rebuild
+      clean (only pre-existing unrelated MSVC-CRT deprecation warnings);
+      `scripts/check-native-freshness.sh win` reports FRESH. Full writeup
+      in `benchmark/RESULTS.md`'s new Windows AF_UNIX section.
+- [x] **Re-ran the formal `benchmark/` harness end-to-end** to get a real
+      avg/median IPC-latency number, same as Linux's rebuild-then-
+      re-measure pattern. Found and fixed two more pre-existing Windows-
+      only blockers along the way, both unrelated to the AF_UNIX change
+      itself: (1) `benchmark/scripts/report.ts` spawned
+      `scripts/check-native-freshness.sh` directly, which fails on
+      Windows (`uv_spawn` can't exec a `.sh` shebang) -- fixed by
+      prepending `"bash"` to the argv on `win32`; (2) `src/native.ts`'s
+      `dlopen(paths.shim, ...)` failed with error 126 (module not found)
+      unless the process CWD happened to be `native/build/` itself,
+      because Windows' `LoadLibrary` only auto-searches a DLL's own
+      directory for its dependencies (`libcef.dll` etc.) when CWD matches
+      -- fixed by calling `SetDllDirectoryW` via a small `kernel32.dll`
+      FFI call before `dlopen()`, mirroring the existing fix in
+      `native/win/bringup_test.c`. Also found the mini-app benchmark
+      scenarios' shared `app.js`/`index.html` were checked out as broken
+      Git-symlink placeholders (no symlink privilege on this Windows
+      account even with `core.symlinks=true`) -- worked around by copying
+      the real files over the placeholders (not a code bug, benchmark-
+      fixture-only). With all three fixed: `BENCH_REPS=5
+      BENCH_IDLE_SECONDS=6 bun benchmark/scripts/report.ts` gives IPC
+      round trip **4.5ms baseline -> 0.3ms median**, a noise-level tie
+      with Electron's 0.2ms, matching mac/Linux. Windows results table in
+      `benchmark/RESULTS.md` updated with this run's real numbers.
+
 ---
 
 **Naming:** `bunium`, confirmed by user.

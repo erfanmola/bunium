@@ -71,7 +71,7 @@ COMMON_FLAGS=(
   "$OUT_DIR/bunium_system_win.obj" "$OUT_DIR/bunium_bsdiff_wrap.obj" \
   "$OUT_DIR/bsdiff.obj" "$OUT_DIR/bspatch.obj" \
   "$WRAPPER" "$CEF_RELEASE/libcef.lib" user32.lib gdi32.lib dwmapi.lib \
-  shell32.lib ole32.lib
+  shell32.lib ole32.lib ws2_32.lib
 
 "$CXX" "${COMMON_FLAGS[@]}" /nologo /c \
   "/Fo$OUT_DIR/subprocess_main.obj" "$MAC_SRC/subprocess_main.cpp"

@@ -242,28 +242,41 @@ first real-Windows verification of the packaging pipeline).
 |---|---|---|---|---|---|
 | framework/runtime on-disk size (packaged) | 542M | 367M | -- | -- | Electron |
 | process boot (bare `-e "exit(0)"`, median of 10) | 60ms (bun) | **48ms (node)** | -- | -- | Electron |
-| process start -> first paint (ms) | **149** | 188 | **160** | 189 | **bunium** |
-| idle RSS (MB) | 578.6 | **287.2** | 609.7 | **309.1** | Electron |
+| process start -> first paint (ms) | **147** | 193 | **161** | 193 | **bunium** |
+| idle RSS (MB) | 577.1 | **287.6** | 607.4 | **309.4** | Electron |
 | process count (main + helpers) | 5 | **4** | 5 | **4** | Electron |
-| idle CPU, full process tree (%) | **0** | **0** | **0** | **0** | tied |
-| IPC round trip, avg of ~50 (ms) | -- | -- | 10.4 | **0.2** | Electron |
-| mini-app DOM render, 200 rows (ms) | -- | -- | 1.1 | 1.0 | tied |
+| idle CPU, full process tree (%) | 1.6 | **0** | 2.3 | **0** | Electron |
+| IPC round trip, avg of ~50 (ms) | -- | -- | 0.3 | 0.2 | tied (noise) |
+| mini-app DOM render, 200 rows (ms) | -- | -- | 1.2 | 1.1 | tied |
 
 **Shape differs from mac/Linux:** bunium wins startup/paint time outright
-here (unique to Windows); RSS/process count/IPC latency favor Electron
-(same direction as mac); idle CPU is a 0%/0% tie (same shared
-`disable-features` flags, compiled in via `native/win/build.sh`'s
-shared-sources recipe). **Real finding: `bun` boots slower than `node`
-on this host** (60ms vs 48ms median) -- opposite of mac's ~5.8x bun win,
-not investigated further (Bun's own startup cost, not a bunium code
-path).
+here (unique to Windows); RSS/process count favor Electron (same
+direction as mac); idle CPU shows a small 1.6-2.3% bunium vs 0% Electron
+gap in this run (not investigated -- could be real or host-noise, unlike
+the 0%/0% tie an earlier pass of this table reported before the
+IPC-latency fix below, likely explained by the mini-app's IPC sweep now
+actually running during the sampling window, see below). IPC latency is
+now a **noise-level tie** (0.3ms vs 0.2ms) after the AF_UNIX wake-socket
+fix, matching mac/Linux -- see "IPC latency, Windows AF_UNIX
+implementation" below for what changed and how it was verified. **Real
+finding: `bun` boots slower than `node` on this host** (60ms vs 48ms
+median) -- opposite of mac's ~5.8x bun win, not investigated further
+(Bun's own startup cost, not a bunium code path).
 
-**Two real bugs found and fixed getting this run working:**
+**Three real bugs found and fixed getting this run working:**
 
 1. `benchmark/shared/{app.js,index.html}` are Git symlinks that check out
    as broken placeholder text files on Windows (`core.symlinks=false`
-   default) -- not a code bug, worked around by copying the real files
-   over the placeholders.
+   default, and this account lacks the privilege to create symlinks even
+   with `core.symlinks=true`) -- not a code bug, worked around by copying
+   the real files over the placeholders (`benchmark/bunium-mini-app/
+   dist/{app.js,index.html}`, `benchmark/electron-mini-app/
+   {app.js,index.html}`). Without this fix the mini-app scenarios ran but
+   silently produced no `ipc_rtt_ms`/`mini_app_render_ms` BENCH lines at
+   all (the placeholder files have no real logic in them), which is why
+   the table above previously showed a lopsided 10.4ms bunium IPC number
+   -- that number was measured against a broken checkout, not the real
+   AF_UNIX-fixed code path; see the corrected 0.3ms number now.
 2. **`benchmark/scripts/report.ts`'s `REPO` path was a real bug, fixed.**
    `new URL("../..", import.meta.url).pathname` returns a POSIX-style
    path on Windows (leading `/`, `%20`-encoded spaces) -- passed as `cwd`
@@ -272,6 +285,16 @@ path).
    despite `bun.exe` being on `PATH`. Fixed with
    `fileURLToPath(new URL("../..", import.meta.url))`. Would have
    silently broken the harness for any future from-scratch Windows run.
+3. **`src/native.ts`'s `dlopen(paths.shim, ...)` failed with error 126**
+   (module not found) when the app's CWD wasn't `native/build/` itself --
+   `bunium_shim.dll` depends on `libcef.dll` etc. living alongside it, and
+   Windows' `LoadLibrary` only auto-searches a DLL's own directory for its
+   dependencies when the process CWD already matches. Fixed by calling
+   `SetDllDirectoryW` (via a tiny `kernel32.dll` FFI call) with the shim's
+   directory before `dlopen()`, mirroring the fix already present in
+   `native/win/bringup_test.c`'s C bring-up harness. Without this, every
+   bunium scenario run from its own project directory (as the benchmark
+   harness does) failed outright with no BENCH output at all.
 
 ## IPC latency, round 2: wake self-pipe — landed, measured a win, later found to be a dead no-op (2026-08-31)
 
@@ -380,6 +403,17 @@ machine/methodology as the table below):
   traces specifically bracketing the very first call across several fresh-
   process runs and compare against a trace of window creation/first-paint
   timing to see whether the two overlap.
+
+## IPC latency, Windows AF_UNIX implementation (2026-08-31, real Windows hardware)
+
+Closed the Windows gap flagged in round 3 above. `bunium_set_wake_socket_path` (`native/mac/bunium_shim.cpp`, shared source) now has a real `#if defined(_WIN32)` branch instead of a no-op: Windows 10 1803+/Windows 11 ship `AF_UNIX` via `afunix.h` (Winsock2) with the same `sockaddr_un` shape as POSIX, so the logic mirrors the mac/Linux branch almost exactly -- only the socket handle type (`SOCKET`, not `int`) and call names (`closesocket`/`ioctlsocket`/`send` instead of `close`/`fcntl`/`write`) differ, plus a one-time `WSAStartup` before the first `socket()` call. Added `ws2_32.lib` to `native/win/build.sh` and `build_debug.sh`'s link lines (needed for `WSAStartup`/`socket`/`connect`/etc.) -- no other build changes required, since `afunix.h`/`winsock2.h` ship with the Windows SDK already on this build's include path.
+
+**Verified for real on Windows** (same i5-14600K/Windows 11 Pro host as the earlier Windows benchmark section), two ways:
+- Standalone repro (`Bun.listen({unix})` server + a direct `bunium_set_wake_socket_path` FFI call, no full app): connect succeeds, warm-up ping delivered, `data` handler fires -- confirms the Winsock `AF_UNIX` path actually works end-to-end before trusting it in the full app (same "verify the event fires before trusting a benchmark number" discipline round 2's false-positive taught).
+- Full app run (`examples/basic-window.ts`, `BUNIUM_IPC_DIAG=1`): `browser_wake_write` -> `js_wake_socket_data` checkpoints land **20-80us apart**, matching the ~30-40us median mac/Linux repros found before shipping and the 5-40us Linux confirmed range -- same order-of-magnitude win now landing on Windows too.
+- `native/win/build.sh` rebuild verified clean (only pre-existing deprecation warnings, e.g. `fopen`/`getenv` MSVC-CRT-safe-function nags, unrelated to this change); `scripts/check-native-freshness.sh win` reports `FRESH` against the rebuilt `.dll`.
+
+Re-ran the formal `benchmark/` harness end-to-end after fixing two more blockers uncovered along the way (see items 1 and 3 in "Two real bugs found" above, now three): the mini-app scenarios' shared `app.js`/`index.html` were checked out as broken Git-symlink placeholders on this Windows account (no symlink privilege), and `src/native.ts`'s `dlopen()` failed with error 126 outside `native/build/`'s own CWD. With both fixed, `BENCH_REPS=5 BENCH_IDLE_SECONDS=6 bun benchmark/scripts/report.ts` gives a real number: **IPC round trip 4.5ms baseline -> 0.3ms median** (bunium-mini-app, 50-call sweep, 5 reps) vs Electron's 0.2ms -- a noise-level tie, matching mac's and Linux's post-fix results. The Windows results table above now reflects this run.
 
 ## What actually shipped (verified: 37/37 examples, 6/6 scaffolds, every commit)
 
