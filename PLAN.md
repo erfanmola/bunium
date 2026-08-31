@@ -2138,6 +2138,121 @@ Verified after every change: 37/37 `examples/*.ts`, 6/6
   rebuilt there, but this was **not verified** on Linux/Windows this
   session.
 
+## Post-Phase-11 — benchmark suite verified on Linux (2026-08-31)
+
+- [x] **`benchmark/` run for real on Linux for the first time** (bare-metal
+      x86_64 Arch Linux, no Docker) — the "should just work, unverified"
+      posture `docs/guide/benchmarks.md` previously documented is now
+      verified. Built CEF `linux64` + the shim from a clean checkout
+      (`docker/linux/fetch-cef.sh` then `native/linux/build.sh`, no script
+      changes needed), `bun link`/`bun link bunium`, `bun install` for the
+      two `electron-*` apps. **Real environment gotcha found:** this host
+      has no Node/npm at all, only Bun — `bun install` skips npm lifecycle
+      scripts by default, so the `electron` package's real binary never
+      got downloaded automatically; fixed per-app by running
+      `bun run node_modules/electron/install.js` once manually. Not a
+      bunium bug, just a Bun-as-sole-package-manager quirk worth knowing
+      for any future from-scratch Linux setup (CI or otherwise).
+      `BENCH_REPS=5 BENCH_IDLE_SECONDS=6`, 20/20 reps clean. Full numbers
+      and analysis in `benchmark/RESULTS.md`'s "Linux results" section;
+      short version: **bunium wins paint time/RSS/process-count outright
+      on this run** (opposite shape from macOS, where Electron wins those
+      three), **idle CPU is a genuine 0%/0% tie** — confirmed via `ps`
+      that the mac idle-CPU fix's `disable-features` flags
+      (`GatherProcessRequirementMetrics` etc., shared `bunium_common.h`)
+      are present on the real Linux subprocess command line and that CPU
+      `TIME` stays flat across a 5s sampling window — and IPC latency
+      still favors Electron by a similar margin to mac (no Linux-specific
+      IPC work done). Framework/runtime on-disk size is the one metric
+      that flips vs mac (Linux's raw CEF dev-tree build is larger than
+      this Electron build's `dist/`), but that comparison isn't apples-to-
+      apples yet — mac's number is a *packaged, trimmed* `dist-release/`
+      artifact and Linux has no packaging/trim pipeline to produce the
+      equivalent from yet (see Phase 8/10 Linux follow-ups).
+- [x] **"SIGTERM crash-loop" investigated and root-caused (2026-08-31) —
+      not a bunium bug, no code fix needed.** The original finding above
+      (zygote termination-status errors → network service restart →
+      repeated GPU process launch failures → fatal "GPU process isn't
+      usable") came from an ad hoc `timeout <N> bun run main.ts` sanity
+      check, not the real harness. Root cause, confirmed via `ps -o
+      pid,pgid`: GNU `timeout` (without `--foreground`) puts its child in
+      a *new process group* and sends the timeout signal to the *whole
+      group at once* — every `bunium_subprocess` helper (zygote/GPU/
+      network/renderer) dies simultaneously alongside the main browser
+      process, so helpers vanish mid-shutdown out from under the browser
+      process's own orderly `CefShutdown()`. Confirmed three ways: (1)
+      `timeout --foreground` (no new process group) is clean; (2) the real
+      harness (`child_process.spawn` + `child.kill("SIGTERM")`, which only
+      signals the root PID) never reproduces it, across the full 20-rep
+      benchmark session; (3) **the identical `timeout` command against
+      `electron-minimal` reproduces the exact same crash signature
+      byte-for-byte** — generic Chromium multi-process behavior, not a
+      bunium-vs-Electron difference. `bunium_subprocess` has no bunium-
+      owned signal handling (thin `CefExecuteProcess` wrapper); all of
+      this is inherited from CEF/Chromium itself. Operational takeaway for
+      docs, not code: deploy under `KillMode=process` (not systemd's
+      default `KillMode=control-group`) so only the main PID gets
+      signaled — same guidance would apply to Electron too. Full writeup
+      in `benchmark/RESULTS.md`.
+
+## Post-Phase-11 — Linux CI verification + full scaffold smoke sweep (2026-08-31)
+
+- [x] **Every Linux-relevant CI job manually reproduced locally, all
+      green.** `ci.yml` (`bun run typecheck` clean; `bun run lint` has 11
+      pre-existing formatting errors in `src/system/tray.ts`/`menu.ts`
+      unrelated to any change this session — flagged, not fixed, out of
+      scope). `linux-smoke.yml`'s examples sweep: 36/37 PASS, exactly
+      matching CI's allowlist (the one skip, `color-scheme-live-test.ts`,
+      is an expected mac-only `osascript` dependency). `linux-smoke.yml`'s
+      packaging step (`packaging/linux/package.sh ... --verify`): PASS,
+      real window + pixel check. `release.yml`'s `linux-x64` job
+      (`scripts/stage-release-artifacts-linux.sh` +
+      `scripts/verify-platform-package-linux.sh`): both PASS.
+- [x] **New `scripts/smoke-scaffolds-linux.sh`** (mirrors
+      `scripts/smoke-scaffolds-mac.sh`) — all 6 `create-bunium-app`
+      templates verified end-to-end on real X (bare-metal x86_64, no
+      Docker/Xvfb needed): scaffold → `bun link bunium` → `bun install` →
+      `bun run build` → real-window+pixel check via
+      `create-bunium-app/verify-prod.ts`. **6/6 PASS** after one real bug
+      found and fixed:
+- [x] **`vue-ts` template build bug, fixed.** Fresh `vue-ts` scaffolds
+      failed `bun run build` (`vue-tsc -b`) with `error TS2307: Cannot
+      find module './App.vue'`. Root cause: the template had no
+      `src/vite-env.d.ts` (or equivalent) declaring the `*.vue` module
+      shim that `vue-tsc`/`tsc` need to type-check `.vue` SFC imports —
+      `@vue/tsconfig/tsconfig.dom.json` (the template's `tsconfig.json`
+      base) does not itself provide this, and neither does `vite/client`;
+      standard `create-vue` scaffolds always ship this file, but it was
+      missing here. Not Linux-specific (no case-sensitivity issue found —
+      `vue-js`'s sibling `.vue` import worked fine since plain `.js`
+      doesn't type-check imports), just a gap in this template's TS
+      config never previously exercised by a real `tsc`/`vue-tsc` build
+      before this Linux sweep. Fixed by adding
+      `create-bunium-app/templates/vue-ts/src/vite-env.d.ts` with the
+      standard `/// <reference types="vite/client" />` + `declare module
+      "*.vue"` shim, and widening `tsconfig.json`'s `include` to cover
+      `src/**/*.d.ts`. Rerunning the full sweep after the fix: 6/6 PASS.
+- [x] **`bun run lint`'s 11 pre-existing formatting errors, fixed.**
+      `biome check --write .` reformatted `src/app.ts`, `src/system/
+      menu.ts`, `src/system/tray.ts`, and three `benchmark/scripts/*.ts`
+      files (all pure line-wrapping/import-order, no logic changes —
+      confirmed by diff). Two real (non-format) lint findings needed
+      manual fixes: `benchmark/scripts/bench.ts` had a
+      `noAssignInExpressions` hit with a stale/wrongly-scoped
+      `biome-ignore` comment on one line and no suppression at all on a
+      second, near-identical `(extra[name!] ?? (extra[name!] = []))`
+      line — fixed by giving each its own correctly-ruled
+      `biome-ignore lint/suspicious/noAssignInExpressions` comment; and
+      `benchmark/shared/index.html` (symlinked identically into both
+      `bunium-mini-app/dist/` and `electron-mini-app/`, so one edit fixes
+      both) was missing `lang="en"` on `<html>` and `type="button"` on
+      the counter `<button>` (`useHtmlLang`/`useButtonType`), both no-op
+      for the benchmark's behavior/rendering. `bun run lint` and `bun run
+      typecheck` both clean; full re-verification after the fix: 36/36
+      examples (Linux's one permanent skip aside), 6/6 scaffolds,
+      packaging-verify and release-artifacts-verify scripts all still
+      PASS.
+
 ---
 
 **Naming:** `bunium`, confirmed by user.

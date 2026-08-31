@@ -43,7 +43,10 @@ export class Menu {
     }
     if (spec.submenu) {
       const submenu = asPointer(
-        lib.symbols.bunium_system_menu_add_submenu(menuHandle, cstr(spec.label))!,
+        lib.symbols.bunium_system_menu_add_submenu(
+          menuHandle,
+          cstr(spec.label),
+        )!,
       );
       for (const child of spec.submenu) this.#addInto(submenu, child);
       return;

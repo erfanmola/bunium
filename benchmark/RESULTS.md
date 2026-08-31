@@ -85,6 +85,100 @@ it was tried) since the investigation and the tradeoff reasoning are still
 real and worth keeping on record even though the change itself isn't
 shipped.
 
+## Linux results (2026-08-31, x86_64, bare host, first real run)
+
+First real (non-simulated) run of this harness on Linux — the "should just
+work, unverified" posture from the note below is now verified. Ran on a
+bare-metal x86_64 Arch Linux host (no Docker), CEF `linux64` distro, built
+via `docker/linux/fetch-cef.sh` + `native/linux/build.sh` exactly as
+documented (no script changes needed). `bun link` + `bun link bunium` for
+the bunium apps; `bun install` + manually running each `electron` npm
+package's `install.js` for the Electron apps (this host has **no Node/npm
+at all**, only Bun — `bun install` skips lifecycle scripts by default so
+Electron's real binary download doesn't happen automatically; running
+`node_modules/electron/install.js` via `bun run` once per app fetches it).
+Real X11 session (`DISPLAY=:0`), no Xvfb needed. Electron's `chrome-sandbox`
+helper is not SUID-root on this host and Chromium's sandbox still
+initialized without `--no-sandbox` (unprivileged user namespaces enabled at
+the kernel level) — worth checking on any other Linux box this gets rerun
+on, since a non-working sandbox path there could throw off the comparison.
+`BENCH_REPS=5 BENCH_IDLE_SECONDS=6`, 20 total reps, all clean:
+
+| metric | bunium-minimal | electron-minimal | bunium-mini-app | electron-mini-app | winner |
+|---|---|---|---|---|---|
+| framework/runtime on-disk size | 342M (`native/build-linux` + CEF resources) | 282M (`electron/dist`) | — | — | Electron |
+| process start → first paint (ms) | **110** | 392 | **107** | 355 | **bunium** |
+| idle RSS (MB) | **698.4** | 946.3 | **733.7** | 1041.4 | **bunium** |
+| process count (main + helpers) | **7** | 11 | **7** | 11 | **bunium** |
+| idle CPU, full process tree (%) | **0** | **0** | **0** | **0** | tied |
+| IPC round trip, avg of ~50 (ms) | — | — | 2.9 | **0.4** | Electron |
+| mini-app DOM render, 200 rows (ms) | — | — | 1.1 | 1.0 | tied |
+
+**Shape differs from the macOS results above in bunium's favor on this
+run:** bunium wins paint time, RSS, and process count outright on Linux,
+whereas on mac Electron wins RSS/process-count/startup and only disk-size/
+boot-time favor bunium. Idle CPU is a genuine tie at 0% for both — the
+shared `GatherProcessRequirementMetrics`/`MachPortRendezvous*`/
+`SpareRendererForSitePerProcess` disable-features flags from the mac fix
+(`bunium_common.h`, platform-agnostic) are confirmed present on this
+build's actual subprocess command line (checked via `ps` mid-run) and idle
+`TIME` stayed at `00:00:00` across a 5s sampling window for every process
+in the tree — not just a harness artifact. IPC latency still favors
+Electron by a similar margin to mac (no Linux-specific IPC work has been
+done; same adaptive-pump code runs on both platforms). Framework size is
+the one metric that flips vs mac: Linux's CEF minimal distro + Chrome
+resources (`native/build-linux`, 342M) lands larger than this Electron
+build's `dist/` (282M) — not investigated further, likely just a
+different bundle-trim ratio between the two upstream builds on this
+platform, unrelated to any bunium-specific bloat (mac's equivalent
+comparison used bunium's *packaged, trimmed* `dist-release/` output, not
+the raw dev-tree `native/build-linux/` used here — not a fully apples-to-
+apples pair; a trimmed Linux package artifact would need `packaging/`
+support for Linux, which doesn't exist yet).
+
+**Follow-up (2026-08-31, root-caused): the apparent "SIGTERM crash-loop"
+is not a bunium bug — it's generic Chromium multi-process behavior,
+reproduces identically on Electron.** The original note here (from a bare
+`timeout <N> bun run main.ts` sanity check, not from the harness itself)
+saw `zygote_communication_linux.cc: Failed to send GetTerminationStatus
+message to zygote` → `Network service crashed or was terminated,
+restarting service` → repeated `GPU process launch failed: error_code=
+1002` → fatal `GPU process isn't usable. Goodbye.` on shutdown and flagged
+it as a possible bunium-specific double-teardown race. Root-caused via
+process-group inspection (`ps -o pid,pgid`): GNU `timeout` (without
+`--foreground`) puts its child in a **new process group** and, on expiry,
+sends the signal to **the whole group at once** (`killpg`, not just the
+root PID) — every `bunium_subprocess` helper (zygote, GPU, network,
+renderer) gets SIGTERM simultaneously alongside the main browser process,
+so helpers die out from under the browser process's own in-flight,
+self-directed `CefShutdown()` teardown. Confirmed three ways: (1)
+`timeout --foreground` (direct signal delivery, no new group) is clean, 0
+crash-loop; (2) `child_process.spawn()` + `child.kill("SIGTERM")` —
+exactly what `benchmark/scripts/bench.ts` actually does — only signals the
+root PID, never reproduces the crash-loop across dozens of runs (including
+the real 20-rep benchmark session that produced the results above); (3)
+**running the identical `timeout <N> node_modules/electron/dist/electron
+.` against `electron-minimal` reproduces the exact same log signature
+byte-for-byte** — not a bunium-vs-Electron difference at all, both
+Chromium-embedding hosts behave identically when their helper-process
+group is killed out from under them mid-shutdown. Not a benchmark-
+invalidating issue (the real harness never triggers it) and not a bunium
+code bug to fix — `bunium_subprocess` is a thin `CefExecuteProcess`
+wrapper with no bunium-owned signal handling of its own; all subprocess
+lifecycle/signal behavior here is inherited from CEF/Chromium's own
+`//content`/`//base`, identically to Electron. **Real, worth-documenting
+operational implication for anyone deploying a bunium app under a
+supervisor that group-signals by default** (systemd's default
+`KillMode=control-group` behaves the same way as unguarded `timeout`): use
+`KillMode=process` (or an equivalent "signal only the main PID" mode) so
+the app's own shutdown code gets to run before any helper process is
+touched — the same guidance would apply to any Chromium-embedding app,
+Electron included, not something specific to bunium's shutdown path.
+
+Raw per-rep JSON: `benchmark/results/raw.json` / `benchmark/results/
+summary.json` from this run (regenerated in place, not versioned — rerun
+`report.ts` to reproduce).
+
 ## What actually shipped (verified: 37/37 examples, 6/6 scaffolds, every commit)
 
 1. **Adaptive CEF message pump** (`external_message_pump` +

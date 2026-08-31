@@ -99,10 +99,15 @@ class BuniumApp {
     systemEvents.drain();
 
     const requested = lib.symbols.bunium_get_next_pump_delay_ms();
-    const delay = requested >= 0 ? Math.min(requested, PUMP_IDLE_FLOOR_MS) : PUMP_IDLE_FLOOR_MS;
+    const delay =
+      requested >= 0
+        ? Math.min(requested, PUMP_IDLE_FLOOR_MS)
+        : PUMP_IDLE_FLOOR_MS;
     if (process.env.BUNIUM_PUMP_DIAG) {
       this.diagTickCount = (this.diagTickCount ?? 0) + 1;
-      console.error(`[pump-diag-js] tick #${this.diagTickCount} requested=${requested} delay=${delay}`);
+      console.error(
+        `[pump-diag-js] tick #${this.diagTickCount} requested=${requested} delay=${delay}`,
+      );
     }
     this.pumpTimer = setTimeout(this.tick, delay);
   };

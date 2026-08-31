@@ -29,7 +29,7 @@ const WIN_DESCENDANTS_CMD = [
   "powershell",
   "-NoProfile",
   "-Command",
-  "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ForEach-Object { \"$($_.ProcessId)`t$($_.ParentProcessId)\" }",
+  'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)" }',
 ];
 
 function descendants(rootPid: number): number[] {
@@ -138,7 +138,7 @@ export async function runOnce(opts: {
   const onData = (chunk: Buffer) => {
     buf += chunk.toString();
     let idx: number;
-    // biome-ignore lint: simple line-buffered parse loop
+    // biome-ignore lint/suspicious/noAssignInExpressions: simple line-buffered parse loop
     while ((idx = buf.indexOf("\n")) !== -1) {
       const line = buf.slice(0, idx);
       buf = buf.slice(idx + 1);
@@ -147,9 +147,14 @@ export async function runOnce(opts: {
       const [, name, valueStr] = m;
       const value = Number(valueStr);
       if (name === "ipc_rtt_ms") ipcRtt.push(value);
-      else if (name === "process_start" || name === "created" || name === "paint") {
+      else if (
+        name === "process_start" ||
+        name === "created" ||
+        name === "paint"
+      ) {
         milestones[name!] = value;
       } else {
+        // biome-ignore lint/suspicious/noAssignInExpressions: lazy-init accumulator array in place
         (extra[name!] ?? (extra[name!] = [])).push(value);
       }
     }

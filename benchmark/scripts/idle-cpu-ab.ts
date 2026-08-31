@@ -36,7 +36,13 @@ function parseCpuTime(t: string): number {
 
 function snapshot(rootPid: number): { cpuSec: number; raw: string; n: number } {
   const pids = descendants(rootPid);
-  const out = Bun.spawnSync(["ps", "-o", "pid=,rss=,time=,comm=", "-p", pids.join(",")]);
+  const out = Bun.spawnSync([
+    "ps",
+    "-o",
+    "pid=,rss=,time=,comm=",
+    "-p",
+    pids.join(","),
+  ]);
   let cpuSec = 0;
   let n = 0;
   const raw = out.stdout.toString().trim();
@@ -58,7 +64,9 @@ async function run(label: string, env?: Record<string, string>) {
     env: { ...process.env, ...env },
   });
   child.stdout.on("data", (d) => process.stdout.write(`[${label}] ${d}`));
-  child.stderr.on("data", (d) => process.stderr.write(`[${label} stderr] ${d}`));
+  child.stderr.on("data", (d) =>
+    process.stderr.write(`[${label} stderr] ${d}`),
+  );
 
   await Bun.sleep(2000);
   if (!child.pid) throw new Error("no pid");

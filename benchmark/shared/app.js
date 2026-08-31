@@ -43,7 +43,9 @@ let pendingStart = null;
 let pendingResolve = null;
 window.bench.onCount(() => {
   if (pendingResolve) {
-    console.log(`BENCH: ipc_rtt_ms ${(performance.now() - pendingStart).toFixed(3)}`);
+    console.log(
+      `BENCH: ipc_rtt_ms ${(performance.now() - pendingStart).toFixed(3)}`,
+    );
     const resolve = pendingResolve;
     pendingResolve = null;
     resolve();

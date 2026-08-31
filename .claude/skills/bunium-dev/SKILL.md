@@ -461,10 +461,57 @@ to exist first — build once via
 - `benchmark/` — bunium vs Electron comparison (minimal window pair +
   mini-app pair with a literal-shared HTML/JS file between hosts),
   `benchmark/scripts/{bench.ts,report.ts}` harness, results in
-  `benchmark/RESULTS.md` / `docs/guide/benchmarks.md`. Known finding not yet
-  acted on: `src/app.ts`'s `startPumpLoop` polls at a fixed 8ms
-  `setInterval` unconditionally rather than integrating with the OS run
-  loop — drives both idle CPU (~56% of one core) and IPC latency (~12ms vs
-  Electron's ~0.2ms). Real lead for a future perf phase; rerun
-  `benchmark/scripts/report.ts` after touching the pump loop to check
-  progress.
+  `benchmark/RESULTS.md` / `docs/guide/benchmarks.md`. Idle-CPU/IPC-latency
+  root cause found and fixed on macOS (see Post-Phase-11 sections in
+  PLAN.md — several `disable-features` flags in `bunium_common.h` plus an
+  adaptive CEF message pump replacing the old fixed 8ms `setInterval`).
+  **Verified for real on Linux too now (2026-08-31, bare-metal x86_64, no
+  Docker)** — see `benchmark/RESULTS.md`'s "Linux results" section: idle
+  CPU is a genuine 0%/0% tie with Electron (flags confirmed live via `ps`
+  on the real subprocess command line), bunium wins paint time/RSS/
+  process-count outright (opposite shape from mac), IPC latency still
+  favors Electron. Real gotcha hit setting this up: this host has no
+  Node/npm, only Bun — `bun install` skips lifecycle scripts, so
+  `benchmark/electron-*/`'s real Electron binary needs
+  `bun run node_modules/electron/install.js` run manually per app after
+  Also investigated and root-caused (not a bug): an ad hoc `timeout <N> bun
+  run main.ts` sanity check showed a noisy Chromium shutdown crash-loop
+  (zygote/network-service/GPU-relaunch errors) — turned out to be GNU
+  `timeout`'s default behavior of putting its child in a new process group
+  and signaling the *whole group at once* on expiry, killing bunium's
+  subprocess helpers out from under the browser process's own shutdown.
+  Confirmed generic Chromium behavior, not bunium-specific: `timeout
+  --foreground` (no new group) is clean, the real harness (`child.kill`,
+  root-PID-only) never reproduces it, and the identical `timeout` command
+  against `electron-minimal` crashes identically. Operational note (not a
+  code fix): deploy under `KillMode=process`, not systemd's default
+  `KillMode=control-group`, for the same reason. Windows still unverified
+  — no Windows machine available.
+
+## Linux CI verification + scaffold smoke sweep (2026-08-31)
+
+- Every Linux-relevant CI job (`ci.yml`, `linux-smoke.yml`'s examples sweep
+  + packaging-verify step, `release.yml`'s `linux-x64` job) manually
+  reproduced locally on bare-metal x86_64 Arch Linux, all green. `bun run
+  lint` does have 11 pre-existing formatting errors in `src/system/
+  tray.ts`/`menu.ts` — unrelated to this pass, not fixed, worth knowing
+  about before it surprises a future CI run.
+- New `scripts/smoke-scaffolds-linux.sh` (mirrors
+  `scripts/smoke-scaffolds-mac.sh`) — all 6 `create-bunium-app` templates
+  verified end-to-end on real X (no Xvfb needed on a host with a real X
+  server). Found and fixed one real bug: the `vue-ts` template was
+  missing `src/vite-env.d.ts` (the standard `declare module "*.vue"` +
+  `/// <reference types="vite/client" />` shim that `create-vue` always
+  ships), so `vue-tsc -b` failed on every fresh scaffold with `Cannot
+  find module './App.vue'` — `@vue/tsconfig` and `vite/client` don't
+  provide that shim on their own. Fixed by adding the file plus widening
+  `tsconfig.json`'s `include` to cover `src/**/*.d.ts`. Rerun
+  `scripts/smoke-scaffolds-linux.sh` after any change to a template or to
+  `src/` — same discipline as the mac script.
+- The 11 pre-existing `bun run lint` formatting errors mentioned above are
+  now fixed (`biome check --write .`, pure formatting, no logic changes)
+  along with two real lint findings: a mis-scoped/missing
+  `biome-ignore lint/suspicious/noAssignInExpressions` in
+  `benchmark/scripts/bench.ts`, and missing `lang`/`type="button"`
+  attributes in `benchmark/shared/index.html` (symlinked into both
+  mini-app hosts, so the one edit covers both). `bun run lint` is clean.

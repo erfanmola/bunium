@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
+import { mkdirSync, writeFileSync } from "node:fs";
 // Runs each benchmark scenario N times (sequentially -- CEF's
 // ProcessSingleton rule applies to the bunium scenarios, and running
 // Electron concurrently alongside would skew the CPU/RSS numbers anyway),
 // takes the median of each numeric field, and writes both raw JSON and a
 // markdown table to benchmark/results/.
 import { createRequire } from "node:module";
-import { mkdirSync, writeFileSync } from "node:fs";
 import { runOnce } from "./bench";
 
 const REPS = Number(process.env.BENCH_REPS ?? 3);
@@ -57,7 +57,9 @@ function median(nums: number[]): number | null {
   if (clean.length === 0) return null;
   const sorted = [...clean].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!;
+  return sorted.length % 2 === 0
+    ? (sorted[mid - 1]! + sorted[mid]!) / 2
+    : sorted[mid]!;
 }
 
 const allResults: Record<string, unknown>[] = [];
@@ -84,7 +86,9 @@ for (const scenario of scenarios) {
 
   summaries[scenario.label] = {
     ms_process_start_to_paint: median(
-      runs.map((r) => r.ms_process_start_to_paint).filter((x): x is number => x !== null),
+      runs
+        .map((r) => r.ms_process_start_to_paint)
+        .filter((x): x is number => x !== null),
     ),
     rss_mb: median(runs.map((r) => r.rss_mb)),
     cpu_percent: median(runs.map((r) => r.cpu_percent)),

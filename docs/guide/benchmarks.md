@@ -1,13 +1,17 @@
 # bunium vs Electron benchmarks
 
-Measured on one machine (Apple M2 Pro, macOS, arm64), bun 1.4.0 vs Electron
-44.0.0, 5 repetitions per scenario (median reported). Full methodology, raw
-per-rep data, and the harness itself live in
+Measured on one machine per platform: Apple M2 Pro (macOS, arm64) and a
+bare-metal x86_64 Arch Linux box, bun 1.4.0 vs Electron 44.0.0, 5
+repetitions per scenario (median reported). Full methodology, raw per-rep
+data, and the harness itself live in
 [`benchmark/`](https://github.com/erfanmola/bunium/tree/main/benchmark)
 (see `benchmark/RESULTS.md` for the unabridged version of this page,
 including a full round of targeted perf work aimed at closing every gap
-— and a real measurement mistake that was caught and corrected before it
-shipped wrong).
+— a real measurement mistake that was caught and corrected before it
+shipped wrong, and the Linux run's own results/findings). The tables below
+are the macOS numbers; see `benchmark/RESULTS.md`'s "Linux results"
+section for the Linux table — the two platforms currently favor bunium/
+Electron on different metrics and aren't expected to match.
 
 Two comparable app pairs, same UI on both sides:
 
@@ -132,11 +136,36 @@ The harness (`benchmark/scripts/{bench.ts,report.ts}`) is now
 cross-platform in code — `process.platform` branches handle the two
 things that were mac/Linux-only (`ps` doesn't exist on Windows; the
 hardcoded `./node_modules/.bin/electron` shim path doesn't work there
-without `shell: true`). **The Windows branch is unverified — no Windows
-machine was available to test it when it was written (2026-08-31), same
-posture as `packaging/win/cef-trim.sh` and the win32-x64 release CI job.**
-Linux needs no code changes (GNU `ps` accepts the same `-o pid=,rss=,time=`
-format used here) and should just work.
+without `shell: true`). **The Windows branch is still unverified — no
+Windows machine was available to test it, same posture as
+`packaging/win/cef-trim.sh` and the win32-x64 release CI job.**
+
+**Linux is now verified** (2026-08-31, bare-metal x86_64, no Docker): no
+code changes were needed, GNU `ps`'s `-o pid=,rss=,time=` format worked
+as-is. Full results in `benchmark/RESULTS.md`'s "Linux results" section —
+short version: bunium wins paint time/RSS/process-count outright on this
+run (opposite of the mac shape, where Electron wins those), idle CPU is a
+genuine 0%/0% tie (confirming the mac idle-CPU fix's `disable-features`
+flags are live on Linux too), IPC latency still favors Electron. One real
+One thing worth knowing before deploying a bunium app under a process
+supervisor on Linux: sending `SIGTERM` to the **whole process group**
+(GNU `timeout`'s default behavior without `--foreground`, and systemd's
+default `KillMode=control-group`) triggers a noisy Chromium shutdown
+crash-loop (zygote/network-service/GPU-relaunch errors) because helper
+processes die simultaneously with the main process instead of being torn
+down in order by the app's own shutdown code. Confirmed as generic
+Chromium multi-process behavior, not a bunium bug — the identical test
+against `electron-minimal` crashes the same way. Signaling only the main
+PID (what `benchmark/scripts/bench.ts` does, and what `KillMode=process`
+gives you under systemd) avoids it entirely.
+
+One environment-specific gotcha hit during this run, not a bunium bug:
+Bun skips npm lifecycle scripts by default, so `bun install` inside
+`benchmark/electron-*/` installs the `electron` package's JS shim but
+*not* the real platform binary (normally fetched via a `postinstall`-
+style hook). Fix: run `bun run node_modules/electron/install.js` once per
+Electron app after `bun install` (only needed if Node/npm itself isn't
+available to fall back on — this host had neither).
 
 Steps on either platform:
 

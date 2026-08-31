@@ -23,7 +23,9 @@ export class Tray {
   readonly handle: Pointer;
 
   constructor(title = "") {
-    this.handle = asPointer(lib.symbols.bunium_system_tray_create(cstr(title))!);
+    this.handle = asPointer(
+      lib.symbols.bunium_system_tray_create(cstr(title))!,
+    );
   }
 
   setTitle(title: string): this {
