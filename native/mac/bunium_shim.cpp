@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -6,6 +7,12 @@
 
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
+#endif
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 #endif
 #if defined(_WIN32)
 // windows.h min/max macros collide with CEF headers (and std::min/max) --
@@ -31,7 +38,120 @@ struct BuniumView {
   std::string export_message;      // scratch copy for bunium_poll_message
 };
 
+#if defined(_WIN32)
+// dllexport is Windows' only export mechanism -- the visibility attribute
+// form silently exports nothing from a DLL (visibility only affects ELF),
+// which would make bun:ffi's dlopen() fail on every symbol.
+#define BUNIUM_EXPORT __declspec(dllexport)
+#else
+#define BUNIUM_EXPORT __attribute__((visibility("default")))
+#endif
+
 static CefRefPtr<BuniumApp> g_app;
+
+// IPC-latency fix, take 2: an AF_UNIX socket, with Bun itself owning the
+// server side (Bun.listen({unix: path, ...}), src/app.ts), lets native
+// code wake src/app.ts's JS event loop the instant it has work ready,
+// instead of JS finding out only on its next setTimeout-scheduled pump
+// tick (previously up to PUMP_IDLE_FLOOR_MS late).
+//
+// Take 1 (an AF_UNIX socketpair() self-pipe, with the *JS* side wrapping
+// the raw fd via node:net's `new net.Socket({fd})`) measured as a real
+// win in a full IPC-sweep benchmark, but was later found to be a dead
+// no-op: instrumented tracing (BUNIUM_IPC_DIAG, see BuniumIpcDiagLog)
+// showed native's write()s to the pipe landing correctly, but the JS
+// socket's 'data' event never firing even once across a whole benchmark
+// run -- confirmed as a genuine Bun 1.4.0 limitation via a minimal
+// standalone repro (net.Socket({fd}) wrapping an externally-created fd,
+// e.g. from a bare socketpair()/pipe() syscall, never delivers readable
+// events on macOS), not anything specific to this codebase. The earlier
+// "4.5ms -> 2.3ms" benchmark result was therefore run-to-run measurement
+// noise, not a real effect -- a second isolated benchmark run of that
+// exact (dead) code measured ~3.1ms, inside the same noise band as both
+// numbers. Lesson: BUNIUM_IPC_DIAG-style same-clock-domain tracing across
+// the actual process boundary is what caught this; the benchmark's
+// aggregate timing alone could not distinguish a real fix from noise.
+//
+// Take 2 (this one) puts the *listener* on Bun's side instead --
+// `Bun.listen()` is Bun's own native socket implementation, verified via
+// the same kind of minimal repro to deliver `data` in ~30-40us median
+// (200-sample repro, well under the 1ms target) -- and native just
+// `connect()`s to it as a plain client and writes wake bytes.
+// g_wake_write_fd is that client socket, written from BuniumWakeJs()
+// (called from CEF's UI thread) after `bunium_set_wake_socket_path`
+// connects it (called once from src/app.ts right after its Bun.listen()
+// server is up). Windows has no widely-supported AF_UNIX story in this
+// codebase yet -- `bunium_set_wake_socket_path` is a no-op returning 0
+// there, and the JS side falls back to the pre-existing timer-only pump
+// unchanged (safe either way: BuniumWakeJs() below no-ops if the fd was
+// never set).
+static int g_wake_write_fd = -1;
+
+static void BuniumWakeJs() {
+#if !defined(_WIN32)
+  if (g_wake_write_fd < 0)
+    return;
+  BuniumIpcDiagLog("browser_wake_write", "browser");
+  uint8_t byte = 1;
+  // Nonblocking, best-effort: if the socket buffer somehow already has an
+  // unread wake byte pending, EAGAIN just means a wake is already in
+  // flight -- nothing to do. Never let this block or fail loudly on CEF's
+  // UI thread.
+  ssize_t n;
+  do {
+    n = write(g_wake_write_fd, &byte, 1);
+  } while (n < 0 && errno == EINTR);
+#endif
+}
+
+// Connects g_wake_write_fd to the Unix domain socket src/app.ts is
+// already listening on (via Bun.listen({unix: path})) by the time this is
+// called. Returns 1 on success, 0 if unsupported (Windows) or the connect
+// failed for any reason (stale/missing path, permissions) -- either way
+// BuniumWakeJs() above degrades to a safe no-op and the pre-existing
+// timer-only pump keeps working exactly as before this feature existed.
+extern "C" BUNIUM_EXPORT int32_t bunium_set_wake_socket_path(const char *path) {
+#if !defined(_WIN32)
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0)
+    return 0;
+  struct sockaddr_un addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+  if (connect(fd, reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr)) !=
+      0) {
+    close(fd);
+    return 0;
+  }
+  int flags = fcntl(fd, F_GETFL, 0);
+  fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  g_wake_write_fd = fd;
+  // Warm-up ping: send one byte immediately so the very first *real* wake
+  // isn't the connection's first-ever write. Empirically, the first IPC
+  // round trip of a fresh process measured ~8ms (matching
+  // PUMP_IDLE_FLOOR_MS almost exactly, i.e. falling back to the old
+  // timer-only path) while every later call measured sub-millisecond --
+  // consistent with some one-time cost in the kernel/kqueue path for a
+  // freshly-connected socket's first readable event, separate from the
+  // steady-state latency this fix targets.
+  BuniumWakeJs();
+  return 1;
+#else
+  (void)path;
+  return 0;
+#endif
+}
+
+// Installs BuniumWakeJs as g_wake_js_fn (bunium_common.h) so BuniumApp's
+// message-inbox/pump-scheduling code can call it without this dylib-only
+// symbol needing to be extern-linked into subprocess_main's separate
+// executable. Runs at dylib load time, before bunium_init.
+namespace {
+struct WakeJsInstaller {
+  WakeJsInstaller() { g_wake_js_fn = BuniumWakeJs; }
+} g_wake_js_installer;
+} // namespace
 
 // Reverse lookup (native window/sublayer paint-target handle -> the view
 // attached to it) so raw Cocoa input events, which only know "which native
@@ -138,15 +258,6 @@ extern "C" void bunium_sublayer_get_clip(void *layer_handle, int *out_clipped,
                                          int *out_x, int *out_y, int *out_width,
                                          int *out_height);
 
-#if defined(_WIN32)
-// dllexport is Windows' only export mechanism -- the visibility attribute
-// form silently exports nothing from a DLL (visibility only affects ELF),
-// which would make bun:ffi's dlopen() fail on every symbol.
-#define BUNIUM_EXPORT __declspec(dllexport)
-#else
-#define BUNIUM_EXPORT __attribute__((visibility("default")))
-#endif
-
 extern "C" {
 
 BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
@@ -209,6 +320,7 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
         CefMainArgs(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
   }
 #endif
+
   g_app = new BuniumApp();
 
   CefSettings settings;
@@ -589,7 +701,17 @@ BUNIUM_EXPORT void bunium_emit_to_renderer(void *view_handle, const char *name,
   auto args = message->GetArgumentList();
   args->SetString(0, CefString(name));
   args->SetString(1, CefString(payload_json));
+  BuniumIpcDiagLog("browser_emit_send", "browser");
   browser->GetMainFrame()->SendProcessMessage(PID_RENDERER, message);
+}
+
+// Lets JS log a BUNIUM_IPC_DIAG checkpoint on the same steady_clock
+// timeline the native-side BuniumIpcDiagLog calls use (performance.now()
+// has a per-process time origin and isn't comparable across the
+// browser/renderer process boundary; this always runs in the browser
+// process, so labeled accordingly).
+BUNIUM_EXPORT void bunium_ipc_diag_log(const char *stage) {
+  BuniumIpcDiagLog(stage, "browser");
 }
 
 // CefDictionaryValue::GetDouble() returns 0 (not an auto-converted value)

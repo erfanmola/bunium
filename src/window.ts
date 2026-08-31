@@ -452,6 +452,9 @@ export class BuniumWindow<M extends BuniumMessageMap = BuniumMessageMap>
    * the IPC layer (`.on()`/`.send()` above are the renderer -> main half).
    */
   emit<K extends keyof M & string>(name: K, payload: M[K]): void {
+    if (process.env.BUNIUM_IPC_DIAG) {
+      lib.symbols.bunium_ipc_diag_log(cstr("js_emit_call"));
+    }
     lib.symbols.bunium_emit_to_renderer(
       this.viewHandle,
       cstr(name),
@@ -532,6 +535,9 @@ export class BuniumWindow<M extends BuniumMessageMap = BuniumMessageMap>
         continue; // page sent a non-JSON payload -- skip rather than throw
       }
 
+      if (process.env.BUNIUM_IPC_DIAG) {
+        lib.symbols.bunium_ipc_diag_log(cstr("js_handler_dispatch"));
+      }
       for (const listener of listeners) listener(payload);
     }
   }

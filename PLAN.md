@@ -2270,6 +2270,55 @@ Verified after every change: 37/37 `examples/*.ts`, 6/6
       path, which is POSIX-style even on Windows and broke
       `child_process.spawn`'s PATH search — fixed with `fileURLToPath`.
 
+## Post-Phase-11 — IPC latency, round 2: wake self-pipe (2026-08-31)
+
+User directive: push IPC round-trip latency toward/below Electron's
+0.2-0.5ms (the largest remaining benchmarked gap after idle CPU was fixed).
+Traced the full round-trip call chain end to end and found the dominant
+remaining cost was the browser-process **pickup** step, not the Mojo/CEF
+IPC hops themselves: `OnScheduleMessagePumpWork` could only update an
+atomic wake deadline, which `src/app.ts`'s `setTimeout`-driven pump loop
+discovered only on its *next already-scheduled* tick — an inbound message
+arriving mid-wait still sat until that timer fired.
+
+- [x] **Wake self-pipe, `AF_UNIX socketpair()` + `node:net` wrapping the raw
+      fd on the JS side — shipped, measured a ~1.9x win, later found to be
+      a dead no-op.** `git blame`-visible in this same commit range but
+      **corrected below, not left standing**: `BUNIUM_IPC_DIAG` same-clock-
+      domain tracing (added after the user pushed back with "why still
+      >1ms, find root cause") showed native's `write()`s landing but the
+      JS socket's `'data'` event never firing once in a full run — a real
+      Bun 1.4.0 limitation (`new net.Socket({fd})` doesn't deliver
+      readable events for an externally-created fd), confirmed via a
+      minimal standalone repro outside this codebase. Re-benchmarking the
+      confirmed-inert code measured ~3.1ms, inside the same noise band as
+      both the "4.5ms before" and "2.3ms after" numbers — the original
+      improvement was noise, not a fix.
+- [x] **Wake socket, take 2 (the real fix): Bun-owned `Bun.listen({unix:
+      path})`, native connects out as a client.** Same diagnosis (pickup
+      gated by pump-tick granularity), different delivery mechanism —
+      `src/app.ts` listens with Bun's own socket implementation instead of
+      wrapping a raw fd; native `connect()`s to it and writes a wake byte
+      (`bunium_set_wake_socket_path`, `native/mac/bunium_shim.cpp`).
+      Verified via an isolated repro (~30-40us median) *before* shipping,
+      per the take-1 lesson. Same function-pointer pattern as before for
+      the `subprocess_main.cpp`-link reason. Windows: no implementation
+      yet (documented next step: WinSock2 `AF_UNIX`/`afunix.h`, needs
+      `WSAStartup`/`ws2_32.lib` added to `native/win/build.sh`) — falls
+      back to the pre-existing timer-only pump there, safely. Linux:
+      should carry unchanged (same shared source) but **not verified this
+      session**. **Result: IPC round-trip avg 4.5ms → ~0.3-0.7ms
+      (~7-13x), median ~0.2-0.4ms** — now inside Electron's own run-to-run
+      noise band (0.23-0.82ms measured in this same session). One
+      unexplained artifact: the first IPC call of a fresh process costs
+      6-8ms (occasionally more) in ~3 of 4 runs, every later call
+      sub-millisecond — a warm-up ping helped inconsistently, not fully
+      root-caused, but confirmed one-time/startup-only, not steady-state.
+      Verified against 37/37 examples, no regressions. Full writeup,
+      native round-trip trace example, and concrete next steps (Windows
+      implementation, Linux verification, first-call artifact) in
+      `benchmark/RESULTS.md`.
+
 ---
 
 **Naming:** `bunium`, confirmed by user.

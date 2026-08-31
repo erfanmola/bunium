@@ -184,6 +184,20 @@ extern "C" void bunium_window_update_frame(void *handle, const uint8_t *bgra,
 extern "C" void bunium_sublayer_set_frame(void *handle, int x, int y, int width,
                                           int height);
 
+// Set (once, from bunium_shim.cpp) to BuniumWakeJs, which writes one byte
+// to the wake self-pipe so src/app.ts's JS event loop finds out about
+// newly-arrived work immediately instead of waiting for its next
+// setTimeout-scheduled pump tick. A function pointer rather than a direct
+// extern call because this header is also compiled into subprocess_main.cpp
+// (a separate executable, built and linked without bunium_shim.cpp/dylib --
+// see native/mac/build.sh) -- an extern reference to a symbol that only
+// exists in the shim dylib would fail to link there even though child
+// processes never actually need to call it (each process has its own
+// BuniumApp instance; only the browser process's ever has a real wake pipe
+// to write to). Stays nullptr (safe no-op) in every process except the
+// browser process.
+inline void (*g_wake_js_fn)() = nullptr;
+
 // Name of the raw CefProcessMessage sent renderer->browser every time the
 // injected window.__bunium.reportBounds(x, y, w, h) JS function is called.
 // One-way, fire-and-forget -- no response expected, unlike CefMessageRouter
@@ -237,6 +251,36 @@ struct FrameBuffer {
 inline bool BuniumVerbose() {
   static const bool on = getenv("BUNIUM_CEF_VERBOSE") != nullptr;
   return on;
+}
+
+// std::chrono::steady_clock is backed by the same system-wide monotonic
+// timebase (mach_absolute_time on macOS, CLOCK_MONOTONIC on Linux) in
+// every process on the machine -- unlike JS's performance.now() (which is
+// relative to a per-context/process time origin), a steady_clock reading
+// taken in the browser process and one taken in the renderer process are
+// directly subtractable. Used only for the BUNIUM_IPC_DIAG round-trip
+// latency breakdown (see bunium_ipc_diag_log in bunium_shim.cpp, and every
+// BuniumIpcDiagLog call below) -- not part of the shipped hot path.
+static int64_t MonotonicNowUs() {
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+static bool BuniumIpcDiagEnabled() {
+  static const bool enabled = getenv("BUNIUM_IPC_DIAG") != nullptr;
+  return enabled;
+}
+
+// process_type: "browser" or "renderer" -- passed explicitly by each call
+// site rather than queried from CEF, both are recognizable in the
+// interleaved stderr output without needing to track PIDs by hand.
+static void BuniumIpcDiagLog(const char *stage, const char *process_type) {
+  if (!BuniumIpcDiagEnabled())
+    return;
+  fprintf(stderr, "[ipc-diag] t=%lld us stage=%s process=%s\n",
+          (long long)MonotonicNowUs(), stage,
+          (process_type && *process_type) ? process_type : "browser");
 }
 
 class BuniumClient : public CefClient,
@@ -424,11 +468,19 @@ public:
       return true;
     }
     if (name == kSendMessageName) {
+      BuniumIpcDiagLog("browser_inbox_recv", "browser");
       auto args = message->GetArgumentList();
       std::string msg_name = args->GetString(0).ToString();
       std::string payload = args->GetString(1).ToString();
-      std::lock_guard<std::mutex> lock(inbox_.mtx);
-      inbox_.messages.emplace_back(std::move(msg_name), std::move(payload));
+      {
+        std::lock_guard<std::mutex> lock(inbox_.mtx);
+        inbox_.messages.emplace_back(std::move(msg_name), std::move(payload));
+      }
+      // Don't wait for CEF to separately call OnScheduleMessagePumpWork for
+      // this -- wake the JS pump loop directly the instant a message is
+      // queued, so window.__bunium.send() replies aren't gated by the next
+      // timer-scheduled tick (see g_wake_js_fn's comment).
+      if (g_wake_js_fn) g_wake_js_fn();
       return true;
     }
     return false;
@@ -510,6 +562,7 @@ public:
       auto args = message->GetArgumentList();
       args->SetString(0, arguments[0]->GetStringValue());
       args->SetString(1, arguments[1]->GetStringValue());
+      BuniumIpcDiagLog("renderer_send_v8", "renderer");
       context->GetFrame()->SendProcessMessage(PID_BROWSER, message);
       return true;
     }
@@ -768,6 +821,12 @@ public:
   // push the wake time later in that case). src/app.ts's pump loop polls
   // the resulting deadline via bunium_get_next_pump_delay_ms() each tick.
   void OnScheduleMessagePumpWork(int64_t delay_ms) override {
+    if (BuniumIpcDiagEnabled()) {
+      fprintf(stderr,
+              "[ipc-diag] t=%lld us stage=browser_pump_schedule_requested "
+              "delay_ms=%lld process=browser\n",
+              (long long)MonotonicNowUs(), (long long)delay_ms);
+    }
     if (getenv("BUNIUM_PUMP_DIAG")) {
       static std::atomic<int64_t> call_count{0};
       int64_t n = call_count.fetch_add(1, std::memory_order_relaxed);
@@ -781,6 +840,10 @@ public:
                                                      std::memory_order_relaxed))
         break;
     }
+    // delay_ms <= 0 means "as soon as possible" -- don't make JS wait to
+    // discover this on its next already-scheduled tick, wake it now.
+    if (delay_ms <= 0 && g_wake_js_fn)
+      g_wake_js_fn();
   }
 
   // Registers the `bunium` custom scheme (Phase 3 prod static-file serving,
@@ -911,6 +974,7 @@ public:
                                 CefRefPtr<CefProcessMessage> message) override {
     if (message->GetName() != kDispatchMessageName)
       return false;
+    BuniumIpcDiagLog("renderer_dispatch_recv", "renderer");
 
     auto it = contexts_.find(frame->GetIdentifier().ToString());
     if (it == contexts_.end())

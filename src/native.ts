@@ -16,6 +16,20 @@ export const lib = dlopen(paths.shim, {
   },
   bunium_do_message_loop_work: { args: [], returns: FFIType.void },
   bunium_get_next_pump_delay_ms: { args: [], returns: FFIType.i32 },
+  // Connects native's wake-write socket to the Unix domain socket
+  // src/app.ts is listening on (Bun.listen({unix: path})) -- see
+  // bunium_set_wake_socket_path's comment (native/mac/bunium_shim.cpp) for
+  // why the listener lives on the JS side, not the native side.
+  bunium_set_wake_socket_path: {
+    args: [FFIType.cstring],
+    returns: FFIType.i32,
+  },
+  // BUNIUM_IPC_DIAG round-trip latency breakdown only (see
+  // native/mac/bunium_common.h's BuniumIpcDiagLog) -- lets JS log a
+  // checkpoint on the same steady_clock timeline the native-side stages
+  // use, since performance.now() has a per-process origin and isn't
+  // comparable across the browser/renderer process boundary.
+  bunium_ipc_diag_log: { args: [FFIType.cstring], returns: FFIType.void },
   // Sets the single global root directory that the "bunium://app/<path>"
   // custom scheme resolves against (see BuniumSchemeHandlerFactory in
   // bunium_common.h). Must be called before any loadURL("bunium://...")

@@ -224,6 +224,114 @@ path).
    `fileURLToPath(new URL("../..", import.meta.url))`. Would have
    silently broken the harness for any future from-scratch Windows run.
 
+## IPC latency, round 2: wake self-pipe — landed, measured a win, later found to be a dead no-op (2026-08-31)
+
+Investigated after Round 1 (below) left IPC ~4-9x behind Electron. Traced
+the full round-trip call chain (renderer `send()` → `CefProcessMessage` →
+browser-process inbox → **JS pump pickup** → `.on()` handler → `emit()` →
+`CefProcessMessage` back to renderer → JS callback) and identified the
+pickup step as the likely dominant cost: `OnScheduleMessagePumpWork
+(delay_ms)` only updated an atomic deadline; `src/app.ts`'s pump loop could
+only *discover* that deadline on its *next already-scheduled* `setTimeout`
+tick.
+
+Shipped fix: an in-process `AF_UNIX` `socketpair()` self-pipe, written from
+native whenever `OnScheduleMessagePumpWork` requested `delay_ms <= 0`, with
+`src/app.ts` wrapping the read end in a `node:net` `new net.Socket({fd})`
+and reacting to its `'data'` event. **Measured avg round-trip 4.5ms →
+~2.3-2.4ms (~1.9x) across 3 reps** — looked like a real, working fix and
+was documented as one.
+
+**It wasn't.** Pushed further (user: "why still >1ms, find root cause") by
+adding same-clock-domain native tracing (`BUNIUM_IPC_DIAG`, `BuniumIpcDiagLog`
+in `bunium_common.h` — `std::chrono::steady_clock` is one shared monotonic
+timebase across every process on the machine, unlike `performance.now()`,
+which has a per-process time origin and can't be subtracted across the
+browser/renderer boundary) at every hop. The trace showed native's
+`write()` calls landing correctly on the self-pipe, but the JS socket's
+`'data'` event **never firing once** across a full run — confirmed as a
+genuine Bun 1.4.0 limitation via a minimal standalone repro
+(`new net.Socket({fd})` wrapping a bare `socketpair()`/`pipe()` fd created
+outside Bun's own socket machinery never delivers readable events on
+macOS), not anything specific to this codebase. Re-running the "4.5ms →
+2.3ms" benchmark against this confirmed-inert code a second time measured
+**~3.1ms avg** — inside the same noise band as both the "before" and
+"after" numbers. **The original 1.9x improvement was measurement noise,
+not a real effect** — the wake write() calls were happening constantly
+(idle compositor activity alone triggers dozens/sec) but writing into a
+pipe nobody was ever reading, a harmless no-op. Corrected here rather than
+left standing; see round 3 below for the actual fix, and
+`project_bunium_beat_electron_perf` memory for the "same-clock-domain
+tracing catches what aggregate benchmark timing alone can't" lesson.
+
+## IPC latency, round 3: the real fix — Bun-owned wake socket (2026-08-31)
+
+Same diagnosis as round 2 (pickup gated by the pump's `setTimeout`
+granularity) but the delivery mechanism swapped: instead of JS wrapping a
+raw externally-created fd (broken, see above), **`src/app.ts` itself calls
+`Bun.listen({unix: path, socket: {...}})`** — Bun's own socket
+implementation, not a fd-wrapping compat shim — and native `connect()`s to
+it as a plain client (`bunium_set_wake_socket_path`, `native/mac/
+bunium_shim.cpp`), writing a byte whenever it has work ready
+(`BuniumWakeJs`, called from `OnScheduleMessagePumpWork` when
+`delay_ms <= 0`, and directly from the inbox-push path as a second safety
+net). Verified via an isolated repro (`Bun.listen` unix socket, 200
+samples) that this delivers `data` in **~30-40us median** before shipping
+it for real — the lesson from round 2 was "verify the actual event fires
+with same-clock-domain tracing before trusting an aggregate benchmark
+number," applied up front this time.
+
+A function pointer (`g_wake_js_fn`, `bunium_common.h`), not a direct
+`extern` call, is still required for the same reason as round 2:
+`bunium_common.h` also compiles into `subprocess_main.cpp`, a separate
+executable built without linking `bunium_shim.dylib` — an extern reference
+to a shim-only symbol fails to link there even though child processes
+never call it. Windows has no implementation yet (`bunium_set_wake_socket_
+path` is a no-op returning `0`); the JS side falls back unchanged to the
+pre-existing timer-only pump there, exactly as safely as if the feature
+didn't exist. Concrete next step for Windows: WinSock2's `AF_UNIX` support
+(`afunix.h`, available since Windows 10 build 17063) — same `socket()`/
+`connect()`/`write()` shape, needs `WSAStartup`/`ws2_32.lib` added to
+`native/win/build.sh` (neither exists yet for any other reason in this
+codebase) — genuinely unverified, no Windows machine in this session,
+flagged rather than guessed at. Linux should carry the fix unchanged (same
+shared source, POSIX `AF_UNIX` + `Bun.listen` both platform-generic) but
+was **not verified this session either** — same "shared source, unverified
+on that OS" caveat this codebase already carries for the mac-first
+idle-CPU/process-count fixes.
+
+**Result** (bunium-mini-app's 50-call IPC sweep, native `BUNIUM_IPC_DIAG`
+tracing of individual round trips, and the formal benchmark harness, same
+machine/methodology as the table below):
+- Native trace of individual round trips (`renderer_send_v8` →
+  `renderer_dispatch_recv`, i.e. the full renderer→browser→renderer path):
+  **consistently ~100-800 microseconds** in steady state, e.g. one
+  captured cycle: send at t=0us, browser inbox receipt at +130us, `.on()`
+  handler fires at +318us, reply sent at +371us, renderer receives at
+  +448us total.
+- Formal benchmark avg round-trip: **4.5ms → ~0.3-0.7ms (~7-13x)**, median
+  **~0.2-0.4ms** — now inside the same run-to-run noise band as Electron
+  itself (Electron's own avg varied 0.23-0.82ms across repeat runs in this
+  same session). Verified against the full 37/37 `examples/*.ts` sweep, no
+  regressions, both before and after an added warm-up-ping refinement
+  (below).
+- **One remaining artifact, not yet fully explained**: the *first* IPC
+  call of a freshly-started process costs 6-8ms (sometimes higher, one
+  capture showed 33ms) in ~3 of 4 runs — every subsequent call in the same
+  process is sub-millisecond. Adding a warm-up ping (`BuniumWakeJs()`
+  called once immediately after the wake socket connects, so the
+  connection's first-ever byte isn't also the first real wake) reduced but
+  did not eliminate this — one run dropped the first call to 1.0ms, three
+  didn't improve. Consistent with *some* one-time kernel/kqueue cost for a
+  freshly-connected socket's first readable event, or unrelated first-
+  paint/first-V8-context bootstrap cost coinciding with the first message
+  — not root-caused with certainty, but confirmed to be a one-time
+  per-process startup cost, not a steady-state defect, so not chased
+  further this session. Concrete next step: capture `BUNIUM_IPC_DIAG`
+  traces specifically bracketing the very first call across several fresh-
+  process runs and compare against a trace of window creation/first-paint
+  timing to see whether the two overlap.
+
 ## What actually shipped (verified: 37/37 examples, 6/6 scaffolds, every commit)
 
 1. **Adaptive CEF message pump** (`external_message_pump` +

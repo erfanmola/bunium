@@ -1,5 +1,7 @@
 import type { Pointer } from "bun:ffi";
 import { ptr } from "bun:ffi";
+import { unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { cstr, lib, paths, rootCachePath } from "./native";
 import { systemEvents } from "./system/events";
 
@@ -49,6 +51,8 @@ class BuniumApp {
   private widthBuf = new Int32Array(1);
   private heightBuf = new Int32Array(1);
   private diagTickCount?: number;
+  private wakeServer: ReturnType<typeof Bun.listen> | null = null;
+  private wakeSocketPath: string | null = null;
 
   init(): void {
     if (this.initialized) return;
@@ -61,6 +65,62 @@ class BuniumApp {
     if (!ok) throw new Error("bunium: CefInitialize failed");
     this.initialized = true;
     this.startPumpLoop();
+    this.startWakeSocket();
+  }
+
+  // Lets native code wake the pump loop the instant it has work ready,
+  // instead of JS finding out only on its next setTimeout-scheduled tick
+  // (previously up to PUMP_IDLE_FLOOR_MS late). Bun *listens* here and
+  // native connects out as a plain client (bunium_set_wake_socket_path,
+  // native/mac/bunium_shim.cpp) -- the reverse of the first attempt at
+  // this (a bare socketpair() self-pipe with node:net wrapping the raw fd
+  // on the JS side), which measured as a real win in a full benchmark run
+  // but turned out to be a dead no-op: node:net's `new net.Socket({fd})`
+  // never delivers 'data' for an externally-created fd in Bun 1.4.0
+  // (confirmed via a minimal standalone repro, not specific to this
+  // codebase) -- see bunium_set_wake_socket_path's comment for the full
+  // story and the corrected benchmark number. `Bun.listen()` is Bun's own
+  // socket implementation and was verified (separate repro) to deliver
+  // `data` in ~30-40us median, comfortably under the target.
+  private startWakeSocket(): void {
+    const path = `${tmpdir()}/bunium-wake-${process.pid}-${Math.random().toString(36).slice(2)}.sock`;
+    try {
+      unlinkSync(path);
+    } catch {
+      // Expected in the overwhelmingly common case (fresh random path) --
+      // only matters if a previous run crashed without cleaning up, which
+      // Bun.listen would otherwise fail to bind against.
+    }
+    let server: ReturnType<typeof Bun.listen>;
+    try {
+      server = Bun.listen({
+        unix: path,
+        socket: {
+          data: () => {
+            // Content is irrelevant (each write is just a "something
+            // happened" ping) -- what matters is running the pump tick
+            // now instead of waiting for pumpTimer's already-scheduled
+            // delay to elapse.
+            if (process.env.BUNIUM_IPC_DIAG) {
+              lib.symbols.bunium_ipc_diag_log(cstr("js_wake_socket_data"));
+            }
+            if (this.pumpTimer) clearTimeout(this.pumpTimer);
+            this.tick();
+          },
+          open: () => {},
+          error: () => {
+            // Never let a wake-socket problem take down the app -- worst
+            // case this degrades back to the timer-only pump behavior
+            // that predates this optimization.
+          },
+        },
+      });
+    } catch {
+      return; // Platform/sandbox can't bind a unix socket -- fall back silently.
+    }
+    this.wakeServer = server;
+    this.wakeSocketPath = path;
+    lib.symbols.bunium_set_wake_socket_path(cstr(path));
   }
 
   // Guards against forwarding a spurious OS-level resize as if it were
@@ -158,6 +218,18 @@ class BuniumApp {
   shutdown(): void {
     if (!this.initialized) return;
     if (this.pumpTimer) clearTimeout(this.pumpTimer);
+    if (this.wakeServer) {
+      this.wakeServer.stop(true);
+      this.wakeServer = null;
+    }
+    if (this.wakeSocketPath) {
+      try {
+        unlinkSync(this.wakeSocketPath);
+      } catch {
+        // Best-effort cleanup only.
+      }
+      this.wakeSocketPath = null;
+    }
     lib.symbols.bunium_shutdown();
     this.initialized = false;
   }
