@@ -653,6 +653,16 @@ __declspec(dllexport) void bunium_window_set_constraints(
                    SWP_NOACTIVATE);
 }
 
+// No macOS-style traffic-light buttons on Windows (the standard caption
+// buttons are drawn by the OS and aren't individually repositionable the
+// same way) -- honest no-ops kept so the shared bun:ffi symbol table (same
+// declared symbols across all three platforms) still resolves here. See the
+// real mac implementation in bunium_window_mac.mm.
+__declspec(dllexport) void bunium_window_set_titlebar_style(void* /*handle*/,
+                                                             int /*style*/) {}
+__declspec(dllexport) void bunium_window_set_traffic_light_position(
+    void* /*handle*/, int /*x*/, int /*y*/) {}
+
 // Pump one batch of messages (mirrors the mac nextEventMatchingMask loop).
 // Non-blocking: returns immediately once the queue is drained, so the JS
 // rAF-style pump stays the single clock.

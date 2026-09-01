@@ -11,8 +11,12 @@ name: Release
 # 2026 -- index.json URLs no longer resolve. Flat paths work instead:
 #   https://cef-builds.spotifycdn.com/cef_binary_<version>_macosarm64_minimal.tar.bz2
 #
-# npm publish stays manual (needs credentials + optionalDependency wiring);
-# see docs/guide/publishing.md.
+# Each platform job publishes its own staged platform package to npm on its
+# own native runner (real hardware for each OS, no cross-build/manual-publish
+# step needed); a final job publishes `bunium` + `create-bunium-app` once all
+# three platform packages are live. Requires an `NPM_TOKEN` repo secret (an
+# npm automation token with publish rights on the `bunium`/`bunium-*`/
+# `create-bunium-app` packages) -- see docs/guide/publishing.md.
 on:
    push:
       tags: ["v*"]
@@ -81,6 +85,13 @@ jobs:
               files: |
                  dist-release/bunium-darwin-arm64-${{ env.RELEASE_VERSION }}.tar.gz
 
+         - name: Publish bunium-darwin-arm64 to npm
+           run: |
+              npm config set //registry.npmjs.org/:_authToken="${NPM_TOKEN}"
+              npm publish ./dist-release/bunium-darwin-arm64 --access public
+           env:
+              NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
    linux-x64:
       runs-on: ubuntu-latest
       env:
@@ -129,6 +140,13 @@ jobs:
            with:
               files: |
                  dist-release/bunium-linux-x64-${{ env.RELEASE_VERSION }}.tar.gz
+
+         - name: Publish bunium-linux-x64 to npm
+           run: |
+              npm config set //registry.npmjs.org/:_authToken="${NPM_TOKEN}"
+              npm publish ./dist-release/bunium-linux-x64 --access public
+           env:
+              NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
    win32-x64:
       runs-on: windows-latest
@@ -187,3 +205,33 @@ jobs:
            with:
               files: |
                  dist-release/bunium-win32-x64-${{ env.RELEASE_VERSION }}.tar.gz
+
+         - name: Publish bunium-win32-x64 to npm
+           shell: bash
+           run: |
+              npm config set //registry.npmjs.org/:_authToken="${NPM_TOKEN}"
+              npm publish ./dist-release/bunium-win32-x64 --access public
+           env:
+              NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+   publish-npm:
+      needs: [darwin-arm64, linux-x64, win32-x64]
+      runs-on: ubuntu-latest
+      steps:
+         - uses: actions/checkout@v4
+
+         - uses: oven-sh/setup-bun@v2
+
+         - name: Publish bunium
+           run: |
+              npm config set //registry.npmjs.org/:_authToken="${NPM_TOKEN}"
+              npm publish . --access public
+           env:
+              NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+         - name: Publish create-bunium-app
+           run: |
+              npm config set //registry.npmjs.org/:_authToken="${NPM_TOKEN}"
+              npm publish ./create-bunium-app --access public
+           env:
+              NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

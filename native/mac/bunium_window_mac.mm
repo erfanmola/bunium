@@ -138,7 +138,42 @@ struct BuniumWindowHandle {
   // through CGImageCreate.
   void* device_retained = nullptr;
   void* command_queue_retained = nullptr;
+  // titleBarStyle/trafficLightPosition (Electron parity, mac-only concept --
+  // there's no equivalent on Windows/Linux, see the no-op stubs on those
+  // platforms). AppKit resets standardWindowButton frames on every resize
+  // (Cocoa re-lays-out the title bar), so the requested position has to be
+  // remembered and reapplied from windowDidResize below, not just set once.
+  CGFloat trafficLightX = 0;
+  CGFloat trafficLightY = 0;
+  bool hasTrafficLightPosition = false;
 };
+
+// Repositions the three standard title-bar buttons to (x, y), measured from
+// the title bar's top-left corner (same convention as Electron's
+// trafficLightPosition). Spacing between buttons is read from their own
+// existing layout rather than hardcoded, so this keeps working if a future
+// macOS changes the standard spacing/size. No-op if the window has no
+// title-bar buttons (e.g. a frame:false/borderless window).
+static void BuniumRepositionTrafficLights(NSWindow* window, CGFloat x, CGFloat y) {
+  NSButton* close = [window standardWindowButton:NSWindowCloseButton];
+  NSButton* miniaturize = [window standardWindowButton:NSWindowMiniaturizeButton];
+  NSButton* zoom = [window standardWindowButton:NSWindowZoomButton];
+  if (!close || !miniaturize || !zoom) return;
+
+  NSView* titleBarView = close.superview;
+  if (!titleBarView) return;
+
+  CGFloat spacing = miniaturize.frame.origin.x - close.frame.origin.x;
+  CGFloat buttonHeight = close.frame.size.height;
+
+  NSArray<NSButton*>* buttons = @[ close, miniaturize, zoom ];
+  for (NSUInteger i = 0; i < buttons.count; i++) {
+    NSRect rect = buttons[i].frame;
+    rect.origin.x = x + (CGFloat)i * spacing;
+    rect.origin.y = titleBarView.frame.size.height - y - buttonHeight;
+    [buttons[i] setFrameOrigin:rect.origin];
+  }
+}
 
 // Only job: flip closed_by_user when the user clicks the window's close
 // button. Polled from JS (bunium_window_is_closed) rather than pushed via a
@@ -151,6 +186,12 @@ struct BuniumWindowHandle {
 @implementation BuniumWindowDelegate
 - (void)windowWillClose:(NSNotification*)notification {
   if (self.handle) self.handle->closed_by_user.store(true);
+}
+- (void)windowDidResize:(NSNotification*)notification {
+  if (self.handle && self.handle->hasTrafficLightPosition) {
+    BuniumRepositionTrafficLights(self.handle->window, self.handle->trafficLightX,
+                                   self.handle->trafficLightY);
+  }
 }
 @end
 
@@ -363,6 +404,58 @@ bunium_window_create(int width, int height, const char* title,
     handle->delegate_retained = (void*)CFBridgingRetain(delegate);
 
     return handle;
+  }
+}
+
+// Electron's macOS titleBarStyle: 0=default (normal titled window), 1=hidden
+// (title bar area absorbed into the content view, traffic lights stay at
+// their normal spot), 2=hiddenInset (same, plus traffic lights nudged to a
+// standard inset position -- matches Electron's own hiddenInset look).
+// No-op on a frame:false/borderless window (no title bar to style). A prior
+// explicit bunium_window_set_traffic_light_position call is left untouched
+// by style 1; style 2 only applies its own default inset if the app hasn't
+// already set a custom position.
+extern "C" __attribute__((visibility("default"))) void
+bunium_window_set_titlebar_style(void* handle, int style) {
+  @autoreleasepool {
+    auto* h = static_cast<BuniumWindowHandle*>(handle);
+    NSWindow* window = h->window;
+    if (!(window.styleMask & NSWindowStyleMaskTitled)) return;
+
+    if (style == 0) {
+      window.titlebarAppearsTransparent = NO;
+      window.titleVisibility = NSWindowTitleVisible;
+      window.styleMask &= ~NSWindowStyleMaskFullSizeContentView;
+      return;
+    }
+
+    window.titlebarAppearsTransparent = YES;
+    window.titleVisibility = NSWindowTitleHidden;
+    window.styleMask |= NSWindowStyleMaskFullSizeContentView;
+
+    if (style == 2 && !h->hasTrafficLightPosition) {
+      h->trafficLightX = 20;
+      h->trafficLightY = 20;
+      h->hasTrafficLightPosition = true;
+    }
+    if (h->hasTrafficLightPosition) {
+      BuniumRepositionTrafficLights(window, h->trafficLightX, h->trafficLightY);
+    }
+  }
+}
+
+// Explicit traffic-light-position override (Electron's trafficLightPosition
+// option). Applies immediately and is remembered for reapplication on every
+// future resize (see BuniumWindowDelegate.windowDidResize above -- AppKit
+// resets the standard buttons' frames on its own during title-bar layout).
+extern "C" __attribute__((visibility("default"))) void
+bunium_window_set_traffic_light_position(void* handle, int x, int y) {
+  @autoreleasepool {
+    auto* h = static_cast<BuniumWindowHandle*>(handle);
+    h->trafficLightX = x;
+    h->trafficLightY = y;
+    h->hasTrafficLightPosition = true;
+    BuniumRepositionTrafficLights(h->window, x, y);
   }
 }
 

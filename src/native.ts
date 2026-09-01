@@ -169,6 +169,16 @@ export const lib = dlopen(paths.shim, {
     args: [FFIType.ptr],
     returns: FFIType.i32,
   },
+  // mac-only real effect (Electron's titleBarStyle/trafficLightPosition
+  // parity) -- honest no-ops on Windows/Linux, see the native stubs.
+  bunium_set_native_window_titlebar_style: {
+    args: [FFIType.ptr, FFIType.i32],
+    returns: FFIType.void,
+  },
+  bunium_set_native_window_traffic_light_position: {
+    args: [FFIType.ptr, FFIType.i32, FFIType.i32],
+    returns: FFIType.void,
+  },
   bunium_get_native_window_size_constraints: {
     args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr],
     returns: FFIType.void,

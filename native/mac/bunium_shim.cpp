@@ -290,6 +290,9 @@ extern "C" void *bunium_window_create(int width, int height, const char *title,
 extern "C" void bunium_window_set_constraints(void *handle, int resizable,
                                               int min_width, int min_height,
                                               int max_width, int max_height);
+extern "C" void bunium_window_set_titlebar_style(void *handle, int style);
+extern "C" void bunium_window_set_traffic_light_position(void *handle, int x,
+                                                          int y);
 extern "C" void bunium_window_pump_events();
 extern "C" int bunium_window_get_id(void *handle);
 extern "C" void bunium_window_get_size(void *handle, int *out_width,
@@ -559,6 +562,21 @@ bunium_set_native_window_constraints(void *window_handle, int resizable,
                                      int max_width, int max_height) {
   bunium_window_set_constraints(window_handle, resizable, min_width, min_height,
                                 max_width, max_height);
+}
+
+// Electron parity, mac-only (no equivalent title-bar concept on
+// Windows/Linux -- see the no-op stubs in bunium_window_win.cc /
+// bunium_window_linux.cc, kept so the shared FFI symbol table still
+// resolves on every platform).
+BUNIUM_EXPORT void bunium_set_native_window_titlebar_style(void *window_handle,
+                                                            int style) {
+  bunium_window_set_titlebar_style(window_handle, style);
+}
+
+BUNIUM_EXPORT void
+bunium_set_native_window_traffic_light_position(void *window_handle, int x,
+                                                 int y) {
+  bunium_window_set_traffic_light_position(window_handle, x, y);
 }
 
 BUNIUM_EXPORT int bunium_get_native_window_is_resizable(void *window_handle) {

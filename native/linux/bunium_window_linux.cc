@@ -614,6 +614,16 @@ BUNIUM_LINUX_EXPORT void bunium_window_set_constraints(void* handle,
   XSetWMNormalHints(d, h->window, &hints);
 }
 
+// No native traffic-light/title-bar-style concept on Linux (X11 window
+// decorations, if any, are drawn by the window manager, not the app) --
+// honest no-ops kept so the shared bun:ffi symbol table (same declared
+// symbols across all three platforms) still resolves here. See the real
+// mac implementation in bunium_window_mac.mm.
+BUNIUM_LINUX_EXPORT void bunium_window_set_titlebar_style(void* /*handle*/,
+                                                           int /*style*/) {}
+BUNIUM_LINUX_EXPORT void bunium_window_set_traffic_light_position(
+    void* /*handle*/, int /*x*/, int /*y*/) {}
+
 BUNIUM_LINUX_EXPORT void bunium_window_pump_events() {
   Display* d = GetDisplay();
   if (!d) return;

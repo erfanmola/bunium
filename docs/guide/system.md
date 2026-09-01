@@ -76,10 +76,10 @@ const msg = await showMessageBox({
 if (msg.response === 1) app.shutdown();
 ```
 
-## Verification notes
+## A note on testing
 
-Interactive outcomes (tray clicks, notification banners, dialog panels) need a
-real desktop session to see visually — they're covered by automated tests, but
-worth a manual click-through before shipping.
+Tray clicks, notification banners, and dialog panels need a real desktop
+session to see rendered — they're covered by automated tests, but worth a
+manual click-through before shipping.
 
 Related: [Getting started](/guide/getting-started), [Window](/guide/window).

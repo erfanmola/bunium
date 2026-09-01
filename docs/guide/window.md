@@ -24,6 +24,8 @@ const win = new BuniumWindow({ url: "bunium://app/" });
 | `resizable`   | `boolean` | `true`  | `false` disables user resize entirely.                                 |
 | `minWidth`/`minHeight` | `number` | unset | Minimum content size for user resize.                        |
 | `maxWidth`/`maxHeight` | `number` | unset | Maximum content size for user resize.                        |
+| `titleBarStyle` | `"default" \| "hidden" \| "hiddenInset"` | `"default"` | macOS only. `"hidden"` extends the page under the title bar while keeping the traffic-light buttons in place; `"hiddenInset"` also nudges them to a standard inset position. Ignored on Windows/Linux and on `frame: false` windows. |
+| `trafficLightPosition` | `{ x: number; y: number }` | unset | macOS only. Explicit traffic-light position (logical px from the title bar's top-left corner). Only applies with `titleBarStyle: "hidden"`/`"hiddenInset"`. |
 
 ## Methods
 
@@ -78,6 +80,22 @@ unaffected). To move a frameless window, mark page elements with CSS
 `-webkit-app-region: drag` — bunium scans automatically. Note: a drag region is
 fully non-interactive (no Electron-style `no-drag` override for buttons inside
 one yet).
+
+## Custom title bar (macOS)
+
+```ts
+const win = new BuniumWindow({
+  url: "bunium://app/",
+  titleBarStyle: "hiddenInset",
+  trafficLightPosition: { x: 16, y: 16 },
+});
+```
+
+Lets your page draw its own title bar while keeping the native traffic-light
+buttons (close/minimize/zoom) — the same look Electron's `titleBarStyle` +
+`trafficLightPosition` produce on macOS. There's no Windows/Linux equivalent
+(both platforms ignore these options); use `frame: false` plus a CSS drag
+region there instead, same as any other frameless window.
 
 ## Shutdown
 

@@ -31,6 +31,7 @@ export default defineConfig({
           { text: "Packaging", link: "/guide/packaging" },
           { text: "Auto-update", link: "/guide/updates" },
           { text: "Benchmarks", link: "/guide/benchmarks" },
+          { text: "Roadmap", link: "/guide/roadmap" },
         ],
       },
       {

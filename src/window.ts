@@ -20,6 +20,23 @@ export interface BuniumWindowOptions {
   /** Maximum window content size the user can resize up to. Unset = no maximum. */
   maxWidth?: number;
   maxHeight?: number;
+  /**
+   * macOS only (Electron parity -- other platforms have no equivalent
+   * concept and ignore this option). `"hidden"` extends the page into the
+   * title-bar area while keeping the traffic-light buttons at their normal
+   * spot; `"hiddenInset"` does the same but nudges the buttons to a
+   * standard inset position, matching Electron's own `hiddenInset` look.
+   * Default `"default"` (normal title bar). Requires `frame: true` (the
+   * default) -- a `frame: false` window has no title bar to style.
+   */
+  titleBarStyle?: "default" | "hidden" | "hiddenInset";
+  /**
+   * macOS only (Electron parity). Explicit traffic-light-button position,
+   * measured in logical px from the title bar's top-left corner. Only takes
+   * effect with `titleBarStyle: "hidden"` or `"hiddenInset"` -- overrides
+   * `hiddenInset`'s own default inset when both are set.
+   */
+  trafficLightPosition?: { x: number; y: number };
 }
 
 // Reserved message name for the automatic draggable-region scanner injected
@@ -299,6 +316,20 @@ export class BuniumWindow<M extends BuniumMessageMap = BuniumMessageMap>
       options.maxWidth ?? 0,
       options.maxHeight ?? 0,
     );
+
+    if (options.titleBarStyle && options.titleBarStyle !== "default") {
+      lib.symbols.bunium_set_native_window_titlebar_style(
+        this.windowHandle,
+        options.titleBarStyle === "hiddenInset" ? 2 : 1,
+      );
+    }
+    if (options.trafficLightPosition) {
+      lib.symbols.bunium_set_native_window_traffic_light_position(
+        this.windowHandle,
+        options.trafficLightPosition.x,
+        options.trafficLightPosition.y,
+      );
+    }
 
     this.viewHandle = asPointer(
       lib.symbols.bunium_create_view(

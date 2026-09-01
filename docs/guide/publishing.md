@@ -120,29 +120,25 @@ tree reachable) and run a real window that pixel-verifies a green page —
 the installed-consumer path, PASS locally and in CI before the release
 upload.
 
-## What still blocks a real publish
+## Publishing a release
 
-1. **npm credentials** — publish `bunium`, then all three platform packages
-   (from their staged dirs, e.g.
-   `npm publish ./dist-release/bunium-darwin-arm64` — note the `./`; npm
-   parses a bare `dist-release/...` as a git spec), then `create-bunium-app`
-   (its templates already reference `bunium`). Requires an npm account/token;
-   `"private": true` must come off every package.json at that point.
-   `package.json`'s `optionalDependencies` already lists all three platform
-   packages (`bunium-darwin-arm64`/`bunium-linux-x64`/`bunium-win32-x64`)
-   pinned to the same version -- npm's `os`/`cpu` gating on each platform
-   package means only the matching one ever installs for a given consumer.
-   `npm publish --dry-run` validates a tarball without credentials (root:
-   src/ + LICENSE only, 29 kB; each platform package: 100-300 MB,
-   os/cpu-guarded). The release workflow only runs on tags, so tag `v0.0.1`
-   first to exercise it.
-2. **Windows platform package unverified end-to-end** —
-   `stage-release-artifacts-win.sh`/`verify-platform-package-win.sh` are
-   implemented following the same pattern as the verified mac/Linux scripts,
-   but (like `packaging/win/cef-trim.sh`) have not yet been run against a
-   real Windows CEF distro from this dev environment; the `release.yml`
-   `win32-x64` job is the first real exercise of them, on a real Windows
-   runner.
+Tag `v<version>` (matching `package.json`'s version on all packages) and
+push it — `release.yml` does the rest: each platform job builds its native
+artifacts on its own OS-native runner, stages the platform package, verifies
+the installed-consumer path, attaches the archive to a GitHub Release, then
+publishes that platform package to npm. A final job waits on all three and
+publishes `bunium` + `create-bunium-app` once every platform package they
+depend on (via `optionalDependencies`, pinned to the same version) is live.
+
+Requires an `NPM_TOKEN` repository secret — an npm
+[automation token](https://docs.npmjs.com/creating-and-viewing-access-tokens)
+with publish rights on `bunium`, `bunium-darwin-arm64`, `bunium-linux-x64`,
+`bunium-win32-x64`, and `create-bunium-app`.
+
+`npm publish --dry-run` (run locally) validates a tarball without
+credentials — useful for checking package contents before tagging (root:
+src/ + LICENSE only, ~35 kB; each platform package: 100-300 MB,
+os/cpu-guarded).
 
 ## Docs
 
