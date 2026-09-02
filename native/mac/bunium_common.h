@@ -335,8 +335,11 @@ public:
   // CefLifeSpanHandler
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
     browser_ = browser;
-    if (BuniumVerbose())
+    if (BuniumVerbose()) {
       fprintf(stderr, "[after-created] id=%d\n", browser->GetIdentifier());
+      fprintf(stderr, "[startup-diag] t=%lld us stage=after_created\n",
+              (long long)MonotonicNowUs());
+    }
     // EXPERIMENT (task #21): explicitly assert not-occluded/visible in case
     // Chromium's rAF occlusion-throttling is misfiring in this environment
     // and causing the ~140-200ms bounds-sync lag measured in
@@ -353,6 +356,9 @@ public:
                             bool canGoBack, bool canGoForward) override {
     if (BuniumVerbose()) {
       fprintf(stderr, "[loading] isLoading=%d\n", isLoading ? 1 : 0);
+      if (isLoading)
+        fprintf(stderr, "[startup-diag] t=%lld us stage=loading_start\n",
+                (long long)MonotonicNowUs());
     }
   }
   void OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
@@ -360,6 +366,8 @@ public:
     if (frame->IsMain() && BuniumVerbose()) {
       fprintf(stderr, "[load-end] code=%d url=%s\n", httpStatusCode,
               frame->GetURL().ToString().c_str());
+      fprintf(stderr, "[startup-diag] t=%lld us stage=load_end\n",
+              (long long)MonotonicNowUs());
     }
   }
   void OnLoadError(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
@@ -404,6 +412,11 @@ public:
     if (BuniumVerbose()) {
       fprintf(stderr, "[paint] %dx%d dirty=%zu\n", width, height,
               dirtyRects.size());
+      if (!first_paint_logged_) {
+        first_paint_logged_ = true;
+        fprintf(stderr, "[startup-diag] t=%lld us stage=first_paint\n",
+                (long long)MonotonicNowUs());
+      }
     }
     {
       std::lock_guard<std::mutex> lock(frame_.mtx);
@@ -522,6 +535,7 @@ private:
   void *native_window_ = nullptr;
   void *tracked_sublayer_ = nullptr;
   double device_scale_factor_ = 1.0;
+  bool first_paint_logged_ = false;
   MessageInbox inbox_;
   std::vector<Rect> drag_regions_;
 
@@ -762,6 +776,21 @@ public:
       CefRefPtr<CefCommandLine> command_line) override {
     command_line->AppendSwitch("disable-gpu");
     command_line->AppendSwitch("disable-gpu-compositing");
+    // GPU compositing is already off (see above) -- the isolated GPU process
+    // exists only to do CPU-side compositing work with no real driver code
+    // running in it, so merging it into the browser process costs no real
+    // crash-isolation benefit today. Verified clean previously (37/37
+    // examples, 6/6 scaffolds); re-shipping to re-measure against Electron.
+    command_line->AppendSwitch("in-process-gpu");
+#if defined(__APPLE__)
+    // Verified clean on macOS (37/37 examples, real RSS/process-count win,
+    // no perf cost -- see ARCHITECTURE.md #19). NOT enabled on Windows/Linux:
+    // docs/guide/dev-from-mac.md documents a real "bun + in-process CEF
+    // SEGVs" finding from Windows bring-up with this exact flag -- gate to
+    // mac only until independently verified on those platforms, don't let a
+    // shared-header change silently ship an unverified crash risk there.
+    command_line->AppendSwitch("single-process");
+#endif
     // Chromium's spare-renderer-process feature pre-spawns an idle renderer
     // ahead of the next navigation as a latency optimization for real
     // browsers with tabs/link-clicking. A bunium window's one navigation is
@@ -866,6 +895,9 @@ public:
   // CefRegisterSchemeHandlerFactory needs CEF's IO thread, which doesn't
   // exist yet during OnRegisterCustomSchemes above.
   void OnContextInitialized() override {
+    if (BuniumVerbose())
+      fprintf(stderr, "[startup-diag] t=%lld us stage=context_initialized\n",
+              (long long)MonotonicNowUs());
     CefRegisterSchemeHandlerFactory("bunium", "app",
                                     new BuniumSchemeHandlerFactory());
   }
@@ -879,6 +911,10 @@ public:
     if (BuniumVerbose()) {
       fprintf(stderr, "[context-created] url=%s\n",
               frame->GetURL().ToString().c_str());
+      fprintf(stderr,
+              "[startup-diag] t=%lld us stage=renderer_context_created "
+              "process=renderer\n",
+              (long long)MonotonicNowUs());
     }
     CefRefPtr<CefV8Value> global = context->GetGlobal();
     CefRefPtr<CefV8Value> bunium_obj =

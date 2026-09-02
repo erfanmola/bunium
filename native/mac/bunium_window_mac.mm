@@ -6,10 +6,27 @@
 #include <QuartzCore/CAMetalLayer.h>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+
+// Temporary startup-timing probe (2026-09-02, investigating the first-paint
+// gap vs Electron -- see PLAN.md's post-Phase-11 notes) -- same
+// BUNIUM_CEF_VERBOSE gate and steady_clock approach as bunium_common.h's
+// MonotonicNowUs/BuniumIpcDiagLog, duplicated here rather than including
+// bunium_common.h (kept independent to avoid pulling CEF headers into this
+// Cocoa-only translation unit).
+static bool BuniumWindowVerbose() {
+  static const bool on = getenv("BUNIUM_CEF_VERBOSE") != nullptr;
+  return on;
+}
+static int64_t BuniumWindowNowUs() {
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
 
 // Implemented in bunium_shim.cpp, linked into the same dylib -- forwards
 // raw Cocoa mouse events to whichever CefBrowser is attached to
@@ -320,7 +337,13 @@ extern "C" __attribute__((visibility("default"))) void*
 bunium_window_create(int width, int height, const char* title,
                       int transparent, int frame_enabled) {
   @autoreleasepool {
+    if (BuniumWindowVerbose())
+      fprintf(stderr, "[startup-diag] t=%lld us stage=window_create_start\n",
+              (long long)BuniumWindowNowUs());
     [NSApplication sharedApplication];
+    if (BuniumWindowVerbose())
+      fprintf(stderr, "[startup-diag] t=%lld us stage=nsapplication_shared_done\n",
+              (long long)BuniumWindowNowUs());
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
 
     // frame_enabled=false -> Borderless (Electron's frame:false equivalent:
@@ -347,8 +370,17 @@ bunium_window_create(int width, int height, const char* title,
       window.hasShadow = NO;
     }
 
+    if (BuniumWindowVerbose())
+      fprintf(stderr, "[startup-diag] t=%lld us stage=nswindow_alloc_done\n",
+              (long long)BuniumWindowNowUs());
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    if (BuniumWindowVerbose())
+      fprintf(stderr, "[startup-diag] t=%lld us stage=mtl_device_created\n",
+              (long long)BuniumWindowNowUs());
     id<MTLCommandQueue> commandQueue = [device newCommandQueue];
+    if (BuniumWindowVerbose())
+      fprintf(stderr, "[startup-diag] t=%lld us stage=mtl_command_queue_created\n",
+              (long long)BuniumWindowNowUs());
 
     CAMetalLayer* metalLayer = [CAMetalLayer layer];
     metalLayer.device = device;
@@ -403,6 +435,9 @@ bunium_window_create(int width, int height, const char* title,
     window.delegate = delegate;
     handle->delegate_retained = (void*)CFBridgingRetain(delegate);
 
+    if (BuniumWindowVerbose())
+      fprintf(stderr, "[startup-diag] t=%lld us stage=window_create_return\n",
+              (long long)BuniumWindowNowUs());
     return handle;
   }
 }

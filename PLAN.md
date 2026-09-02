@@ -2415,6 +2415,131 @@ arriving mid-wait still sat until that timer fired.
       with Electron's 0.2ms, matching mac/Linux. Windows results table in
       `benchmark/RESULTS.md` updated with this run's real numbers.
 
+## Post-Phase-11: `--in-process-gpu` + `--single-process` re-shipped on macOS (2026-09-02)
+
+- [x] **User explicitly decided isolation doesn't matter for this project's threat model,
+      overriding the earlier rejections of both flags** -- re-shipped both, macOS only, after
+      re-verifying rather than trusting the old notes: rebuilt, full 37/37 `examples/*.ts` sweep
+      (same pre-existing `vite-dev-test.ts` cold-cache flake as every other run), then
+      re-benchmarked. `--in-process-gpu` alone: process count 5->4 (tied Electron), RSS down
+      ~38-40MB both app shapes, zero measured perf change (confirms the reasoning: GPU work still
+      runs on its own thread regardless of process boundary). `--single-process` on top: process
+      count 4->**1**, idle RSS **273.8MB/334.4MB** (minimal/mini-app) -- both now *below*
+      Electron's 373.1MB/405.6MB, previously an Electron win. First paint and idle CPU unaffected
+      either way (unrelated to process topology), still trail Electron. 6 of 9 tracked metrics now
+      beat Electron outright (disk size, process boot, process count, both RSS numbers), 2 tied
+      (IPC, DOM render), 2 behind (first paint, idle CPU). Full writeup + tradeoffs (stability
+      cost, not just security -- a webview/page crash now takes the whole app down; real
+      functional loss, PAC-based proxy autoconfig unsupported in single-process mode) in
+      `ARCHITECTURE.md` §19.
+- [x] **Gated `--single-process` to macOS only** (`#if defined(__APPLE__)` in
+      `bunium_common.h`, shared across all three platform builds) -- `docs/guide/dev-from-mac.md`
+      already documents a real "bun + in-process CEF SEGVs" finding from Windows native bring-up
+      with this exact flag in a different context (debugging child-process issues, not this
+      shipped-and-verified use). Don't let a shared-header change silently ship an unverified
+      crash risk to Linux/Windows -- would need its own independent verification pass on both
+      platforms before enabling there. `--in-process-gpu` stays unconditional (cross-platform
+      already, verified safe previously across all three).
+- [x] **Investigated going below process count 4 further before landing on `--single-process`.**
+      Tried `--disable-features=NetworkServiceOutOfProcess,AudioServiceOutOfProcess` first (both
+      real, confirmed-existing Chromium feature-flag strings in this CEF build, verified via
+      `strings` on the vendored framework) -- **had zero effect**, CEF's own network-context
+      initialization ignores that Chromium feature regardless of the flag value, confirmed via a
+      real `ps` process-tree diff, not assumed. `storage.mojom.StorageService` (the other
+      always-separate utility process on macOS) has **no** `StorageServiceOutOfProcess` flag in
+      this build's string table at all (unlike Audio/Network, which do have the toggle even if
+      CEF ignores it) -- no supported lever exists for it short of a from-source CEF patch.
+      `--single-process` was the only lever that actually worked, verified by real `ps` tree
+      inspection (down to exactly one process) not just the aggregate benchmark number.
+- [x] **Investigated real GPU-accelerated OSR (`OnAcceleratedPaint`) on macOS -- found blocked
+      upstream, not a bunium gap, before writing any implementation code.** Checked the actual
+      vendored CEF 151.3.16 header (`vendor/cef-macosarm64/include/internal/cef_types_mac.h`,
+      `shared_texture_enabled` field on `cef_window_info_mac_t`) rather than trusting
+      ARCHITECTURE.md's older §6 note (which assumed IOSurface support existed on mac from the
+      generic cross-platform `OnAcceleratedPaint` doc comment) -- the mac-specific field's own doc
+      comment says directly: "Currently only supported on Windows (D3D11)." Setting the flag on
+      mac would be a no-op; `OnAcceleratedPaint` never fires there in this CEF build,
+      `OnPaint`/CPU-readback stays the only path. `--disable-gpu`/`--disable-gpu-compositing` stay
+      on (correct for the only path CEF actually supports on mac today). ARCHITECTURE.md §6,
+      `docs/guide/roadmap.md`, and `docs/guide/benchmarks.md` corrected to say "blocked upstream"
+      instead of "unimplemented" so this doesn't get attempted again without first checking
+      whether a newer CEF version has changed this.
+
+## Post-Phase-11: first-paint real breakdown (macOS, 2026-09-02) — instrumented, one lever found
+
+- [x] **Added permanent, gated startup timing instrumentation** (`BUNIUM_CEF_VERBOSE=1` now also
+      prints `[startup-diag] t=<us> stage=<name>` lines) rather than re-measuring ad hoc, since
+      this is exactly the kind of thing a future session will want to re-check. Full breakdown,
+      the one real 34.8ms lever found (one-time `NSWindow`/WindowServer connection cost, proven
+      via a throwaway two-window-same-process test, not a per-window cost), and why it's not a
+      quick fix (competes with CEF's own main-thread requirement under
+      `multi_threaded_message_loop=false`) are written up in `ARCHITECTURE.md` §20 -- don't
+      duplicate the full narrative here, that's the canonical writeup.
+- [ ] **Concrete next step, not started:** determine whether `CefInitialize()`'s 112ms is mostly
+      blocked-waiting (subprocess IPC handshakes) or CPU-bound on the calling thread -- if
+      blocked-waiting, a second thread could plausibly run the one-time `NSApplication`/`NSWindow`
+      warm-up concurrently and claw back ~35ms of the ~130ms first-paint gap vs Electron. Needs a
+      real experiment (thread-safety of driving `CefInitialize`/AppKit off their current shared
+      main thread) before implementation, not a blind flag flip -- see ARCHITECTURE.md §20 for
+      the exact risk.
+- [ ] **Also not started:** instrument Electron's own startup the same way (raw timestamp at the
+      top of its `main.js`, its `ready`/`browser-window-created` events) to check whether part of
+      the apparent ~130ms gap is a benchmark-methodology asymmetry (Electron's bootstrap paying
+      some of the same Blink/V8/AppKit costs *before* its own equivalent of `process_start`)
+      rather than a real bunium-side inefficiency.
+
+## Post-Phase-11: continuing the isolation-doesn't-matter perf push on Linux/Windows -- not started
+
+- [ ] **Verify `--in-process-gpu` + `--single-process` on Linux.** Same shared
+      `bunium_common.h` change already applies there once rebuilt (`--in-process-gpu` is
+      unconditional cross-platform already; `--single-process` is currently gated
+      `#if defined(__APPLE__)`, see ARCHITECTURE.md §19) -- needs its own real-hardware
+      verification pass (`native/linux/build.sh` rebuild, full `docker/linux/run-examples.sh`
+      sweep, then `benchmark/scripts/report.ts` on real Linux hardware) before removing the
+      platform guard for Linux. No specific crash risk is documented for Linux the way Windows
+      has one, but "no documented risk" isn't the same as "verified safe" -- don't skip the
+      sweep.
+- [ ] **Verify `--in-process-gpu` + `--single-process` on Windows.** Same change, but Windows
+      *does* have a documented real risk with `--single-process` specifically (`docs/guide/
+      dev-from-mac.md`'s "bun + in-process CEF SEGVs" finding from native bring-up) -- treat
+      this as higher-risk than Linux, verify via the Tier 1/Tier 2 remote-Windows workflow
+      (`scripts/win-remote.sh smoke`) with the full `examples/*.ts` sweep before considering it,
+      and be ready for it to simply not be safe to ship there even if the flag exists.
+- [ ] **Re-run `benchmark/RESULTS.md`'s Linux/Windows tables** (currently `TODO` placeholders)
+      against whatever configuration each platform actually ends up shipping, once the above two
+      are resolved either way.
+
+## Post-Phase-11: real GPU-accelerated OSR on Windows -- planned, not started (concrete, unlike macOS)
+
+- [ ] **Windows is the one platform CEF's own headers say shared-texture OSR is actually
+      supported on.** Confirmed directly against upstream CEF 151.3.16 source (`include/
+      internal/cef_types_win.h`, matching the local vendored mac header's wording exactly):
+      `shared_texture_enabled` on the Windows window-info struct is real and documented "Currently
+      only supported on Windows (D3D11)." `cef_accelerated_paint_info_t` on Windows carries a
+      `shared_texture_handle` (`HANDLE`) opened via `ID3D11Device1::OpenSharedResource1` or
+      `ID3D12Device::OpenSharedHandle` -- per the doc comment, "instantiated without a keyed
+      mutex," and per `OnAcceleratedPaint`'s own doc comment, the handle differs every frame
+      (pooled) and must be reopened/copied each callback, never cached.
+- [ ] **Current Windows paint path is CPU-readback GDI, same class of path as mac's CPU-readback
+      Metal path** -- confirmed by reading `native/win/bunium_window_win.cc`: `OnPaint`'s BGRA
+      buffer is blitted via `StretchDIBits` (no GPU involvement at all today, not even the
+      CPU-readback-then-GPU-present hybrid mac uses via `CAMetalLayer`). Real scope for this: (1)
+      stand up a D3D11 device + swap chain in `bunium_window_win.cc` (net-new -- nothing D3D-
+      related exists there yet), (2) set `shared_texture_enabled=1` on the window-info struct
+      and implement `CefRenderHandler::OnAcceleratedPaint` alongside the existing `OnPaint`
+      (`OnPaint` stops being called once shared textures are enabled, per its own doc comment --
+      this is a path switch, not an addition), (3) `OpenSharedResource1` the per-frame handle into
+      a texture, present via the swap chain instead of `StretchDIBits`. This is real, substantial,
+      unverified native Windows/D3D11 work -- nothing here has been prototyped, no Windows machine
+      touched this session (mac-only). Needs the Tier 1/Tier 2 Windows workflow
+      (`docs/guide/dev-from-mac.md`) to develop against, plus the same frame-gap timing
+      methodology (`scroll-timing-test.ts`-style) used for the original mac disable-gpu
+      measurement to confirm it's actually a win before shipping, not assumed from Windows having
+      the API surface.
+- [ ] **Do this after, not instead of, the Linux/Windows `--single-process` verification above** --
+      unrelated, but both touch the same Windows dev-loop bandwidth constraint (remote-only,
+      slower iteration than mac).
+
 ---
 
 **Naming:** `bunium`, confirmed by user.

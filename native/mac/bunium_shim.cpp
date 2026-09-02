@@ -436,7 +436,14 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
     CefString(&settings.root_cache_path).FromASCII(root_cache_path);
   }
 
-  return CefInitialize(main_args, settings, g_app.get(), nullptr) ? 1 : 0;
+  if (BuniumVerbose())
+    fprintf(stderr, "[startup-diag] t=%lld us stage=cef_initialize_start\n",
+            (long long)MonotonicNowUs());
+  int ok = CefInitialize(main_args, settings, g_app.get(), nullptr) ? 1 : 0;
+  if (BuniumVerbose())
+    fprintf(stderr, "[startup-diag] t=%lld us stage=cef_initialize_end\n",
+            (long long)MonotonicNowUs());
+  return ok;
 }
 
 BUNIUM_EXPORT void bunium_do_message_loop_work() { CefDoMessageLoopWork(); }
@@ -488,6 +495,9 @@ BUNIUM_EXPORT void *bunium_create_view(const char *url, int width, int height,
   browser_settings.background_color = transparent
                                           ? CefColorSetARGB(0, 0, 0, 0)
                                           : CefColorSetARGB(255, 255, 255, 255);
+  if (BuniumVerbose())
+    fprintf(stderr, "[startup-diag] t=%lld us stage=create_browser_call\n",
+            (long long)MonotonicNowUs());
   CefBrowserHost::CreateBrowser(window_info, view->client, CefString(url),
                                 browser_settings, nullptr, nullptr);
   return view;

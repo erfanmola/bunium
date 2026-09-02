@@ -92,11 +92,20 @@ real `native/build/` output — so the crash-loop silently came back after the P
 Fixed properly this time: `native/mac/build.sh` now copies them automatically as part of the
 build, not a manual step to remember.
 
-**Still open for Phase 2:** CEF supports a real GPU-accelerated OSR path via shared textures
-(`OnAcceleratedPaint` + `CefAcceleratedPaintInfo`, IOSurface-backed on macOS) that avoids the
-CPU-readback round-trip entirely — that's the theoretically correct high-perf path, not yet
-implemented. The `--disable-gpu` finding above is about the *current* CPU-readback-based OSR path
-specifically, not a final verdict on GPU acceleration in general.
+**Blocked upstream, not just unimplemented (checked 2026-09-02):** CEF's shared-texture OSR path
+(`OnAcceleratedPaint` + `CefAcceleratedPaintInfo`) would avoid the CPU-readback round-trip
+entirely, but the mac window-creation flag that enables it,
+`cef_window_info_mac_t::shared_texture_enabled`
+(`vendor/cef-macosarm64/include/internal/cef_types_mac.h`), says directly in its doc comment:
+"Currently only supported on Windows (D3D11)" — confirmed against this repo's actual vendored CEF
+151.3.16 header, not assumed from the generic cross-platform `OnAcceleratedPaint` doc comment
+(which describes an IOSurface format for mac as part of its general description, but that path
+isn't wired up for mac in this CEF build). Setting the flag on mac is a no-op; `OnPaint` stays the
+only callback that ever fires there. The `--disable-gpu` finding above is still correct for the
+only OSR path CEF actually supports on this platform today — this isn't a bunium gap to close with
+more native code, it's missing upstream CEF/Chromium mac support with no visible timeline. Revisit
+by checking a future CEF version's `cef_types_mac.h` for this same comment before attempting an
+implementation again.
 
 ## 8. Never hand a native buffer to CoreGraphics without copying it
 
@@ -409,3 +418,97 @@ packing values into a struct-like buffer (a `Uint8Array`/`Int32Array` passed via
 instead of individual scalar params. This isn't a style preference — it's a correctness
 requirement given this finding, and should be treated as such when reviewing any future ABI
 addition.
+
+## 19. `--single-process` shipped (2026-09-02) — reverses an earlier rejection, explicit tradeoff
+
+Earlier perf work (§ benchmark history in `PLAN.md`'s post-Phase-11 notes) tried
+`--single-process` and rejected it: it merges the *renderer* into the browser process, which is
+Chromium's real security/stability boundary against untrusted content — a `<bunium-webview>`
+loading a page you don't control could previously crash or compromise only its own renderer;
+merged, that same event takes down the whole app (every window, main process, everything). That
+was the right call under "must keep GPU/renderer isolation" — it stopped being the right call once
+the user explicitly decided isolation doesn't matter for this project and asked to minimize
+process count/RSS at any cost short of hurting CPU/memory/perf.
+
+**Verified before shipping** (not assumed from the earlier rejection's notes): rebuilt, ran the
+full `examples/*.ts` sweep (37/37, same pre-existing `vite-dev-test.ts` cold-cache flake as every
+other run), then re-benchmarked. Real result — process count 5→**1**, idle RSS **273.8 MB**
+(minimal) / **334.4 MB** (mini-app), both now *below* Electron's 373.1/405.6 MB (previously
+Electron won RSS outright). First paint and idle CPU are unaffected either way (unrelated to
+process topology) and still trail Electron.
+
+**Concrete costs, not just "less secure," worth remembering:**
+- **Stability, not just security:** a page/webview crash now takes the whole app down, not just
+  that view. No test here exercises this deliberately (no fuzzing/fault-injection harness exists
+  for it) — the 37/37 sweep proves normal operation still works, not crash resilience.
+- **Real functional loss:** Chromium logs `Cannot use V8 Proxy resolver in single process mode` at
+  startup — system/corporate proxy autoconfig (PAC scripts) is unsupported in this mode. Direct
+  proxy settings (env vars, explicit CEF proxy config) are unaffected; PAC-based ones are.
+- `--in-process-gpu` (§ shipped alongside this) becomes redundant once `--single-process` is on —
+  left in place since it's harmless, not because it still does anything distinct.
+
+If bunium's threat model or stability bar changes later (e.g. someone wants `<bunium-webview>` to
+safely load fully untrusted third-party content again), revisit this — the fix is one flag
+removal, verified working both ways.
+
+## 20. First-paint timeline, real breakdown (macOS, 2026-09-02) — two big Chromium costs, one real 35-45ms lever found and left unaddressed
+
+bunium's first paint (~295-320ms) trails Electron's (~161-195ms) by roughly 130ms. Earlier notes
+attributed this entirely to `CefInitialize()` with "no lever found." Added a permanent, gated
+instrumentation pass to check that claim with real numbers instead of re-asserting it:
+`BUNIUM_CEF_VERBOSE=1` now also emits `[startup-diag] t=<steady_clock us> stage=<name>` lines at
+every major milestone (`cef_initialize_start/end`, `window_create_start/return`,
+`nswindow_alloc_done`, `mtl_device_created`, `create_browser_call`, `after_created`,
+`loading_start`, `renderer_context_created` (renderer process, same monotonic timebase per the
+existing `BuniumIpcDiagLog` comment), `load_end`, `first_paint`) — `native/mac/bunium_shim.cpp` +
+`bunium_common.h` + `bunium_window_mac.mm` (the last one duplicates a tiny `BuniumWindowVerbose`/
+`BuniumWindowNowUs` pair rather than including `bunium_common.h`, to keep that Cocoa-only TU free
+of CEF headers). Zero cost when the env var is unset (same gating pattern as every other verbose
+log line here already).
+
+**Real breakdown, one representative run:**
+
+| segment | cost |
+|---|---|
+| `cef_initialize_start` → `context_initialized` | 111.9ms |
+| `context_initialized` → `window_create_start` (JS-side FFI overhead) | ~0.5ms |
+| `window_create_start` → `nsapplication_shared_done` | ~3.7ms |
+| `nsapplication_shared_done` → `nswindow_alloc_done` (**`NSWindow alloc/init`**) | **34.8ms** |
+| `nswindow_alloc_done` → `window_create_return` (Metal device/queue/layer, delegate) | ~11ms |
+| `window_create_return` → `renderer_context_created` (renderer/Blink/V8 bootstrap) | 120.0ms |
+| `renderer_context_created` → `first_paint` | ~9ms |
+
+**One real, confirmed, quantified lever: the 34.8ms `NSWindow alloc/init` cost is a one-time
+per-process AppKit/WindowServer-connection cost, not a per-window cost.** Verified with a
+throwaway two-window-in-one-process test (not shipped, `examples/tmp-two-windows-test.ts`,
+deleted after use): window 1's `NSApplication`→`NSWindow` gap was 45.6ms, window 2's (same
+process, immediately after) was 4.9ms. This matches the same "first framework touch pays a fixed
+setup tax" pattern already found in `GatherProcessRequirementMetrics` and the Metal-device
+first-call cost elsewhere in this codebase.
+
+**Why it's not a quick fix, left unaddressed this session:** the obvious idea — warm up
+`NSApplication`/a throwaway `NSWindow` on a second thread *while* the main thread blocks inside
+`CefInitialize()` — would only save wall-clock time if `CefInitialize()` spends real time
+*waiting* (blocked on subprocess IPC handshakes) rather than pegging the calling thread the whole
+112ms; not measured either way this session. More importantly, both operations currently
+compete for the same "main thread" requirement: Cocoa's `NSWindow`/`NSApplication` APIs expect to
+run on the process's actual main thread, and this codebase's `multi_threaded_message_loop = false`
+CEF setting means `CefInitialize()` + the CEF UI thread are also tied to whichever thread calls
+them (currently: the same main thread, for straightforward run-loop integration). Moving either
+one off the main thread to unlock real parallelism is a genuine threading-model change with real
+crash risk (off-main-thread Cocoa calls can assert/crash unpredictably), not a quick win — needs
+its own careful experiment (does `CefInitialize()` actually block on I/O long enough to matter;
+does CEF mac support being driven from a non-main thread at all) before attempting, not blind
+implementation.
+
+**The other two segments (`CefInitialize` 112ms, renderer/Blink/V8 bootstrap 120ms) still look
+like inherent Chromium engine cost**, matching the prior "no lever found" conclusion — now backed
+by an actual measured breakdown instead of an unquantified claim. One real open question, not yet
+investigated: whether Electron's own bootstrap pays some of the renderer/V8 cost *before* its
+equivalent "process_start" benchmark timestamp (e.g. via its own spare-process pre-warming
+happening earlier in its startup sequence, outside what this benchmark methodology can see) —
+would explain part of the apparent gap as a measurement-point asymmetry rather than a real
+capability difference. Concrete next step if this is revisited: instrument Electron's own startup
+the same way (its `ready`/`browser-window-created` events plus a raw `process.hrtime` at the very
+top of its `main.js`) for a same-clock-domain comparison, rather than comparing bunium's internal
+breakdown against Electron's external aggregate number.

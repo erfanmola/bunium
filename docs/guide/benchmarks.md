@@ -1,9 +1,11 @@
 # bunium vs Electron
 
-Measured on an Apple M2 Pro (macOS, arm64) and a bare-metal x86_64 Linux
-box, bun 1.4.0 vs Electron 44.0.0, median of 5 runs per scenario. Full
-methodology, raw data, and the benchmark harness itself live in
+Measured 2026-09-02 on an Apple M2 Pro (macOS, arm64), bun 1.4.0 vs Electron
+44.0.0, median of 5 runs per scenario. Full methodology, raw data, and the
+benchmark harness itself live in
 [`benchmark/`](https://github.com/erfanmola/bunium/tree/main/benchmark).
+Linux and Windows tables are still a work in progress — see
+[`benchmark/RESULTS.md`](https://github.com/erfanmola/bunium/tree/main/benchmark/RESULTS.md).
 
 Two comparable app pairs, same UI on both sides:
 
@@ -16,27 +18,31 @@ Two comparable app pairs, same UI on both sides:
 | metric | bunium | Electron | winner |
 |---|---|---|---|
 | framework/runtime on-disk size | 260 MB | 306 MB | **bunium** |
-| process boot (bare `-e "exit(0)"`) | 6.3 ms (bun) | 36.6 ms (node) | **bunium** |
-| idle RSS, minimal app | 432.7 MB | 374.1 MB | Electron |
-| idle RSS, mini-app | 501.0 MB | 408.0 MB | Electron |
-| process count (main + helpers) | 5 | 4 | Electron |
-| first paint after launch | 305-335 ms | 159-196 ms | Electron |
-| idle CPU, full process tree | 3.5-4.0% | 0-0.5% | Electron |
-| IPC round trip (avg of 50) | 4.5 ms | 0.5 ms | Electron |
+| process boot (bare `-e "exit(0)"`) | 6.1 ms (bun) | 35.2 ms (node) | **bunium** |
+| process count (main + helpers) | **1** | 4 | **bunium** |
+| idle RSS, minimal app | **273.8 MB** | 373.1 MB | **bunium** |
+| idle RSS, mini-app | **334.4 MB** | 405.6 MB | **bunium** |
+| first paint after launch | 295 ms | 161 ms | Electron |
+| idle CPU, full process tree | 1.5-2.0% | 0-0.5% | Electron (near-tied) |
+| IPC round trip (median avg-of-50) | 0.2 ms | 0.2 ms | tied |
 | mini-app DOM render, 200 rows | 1.0 ms | 1.0 ms | tied |
 
-bunium wins on disk footprint and process boot time (Bun starts roughly 6x
-faster than Node), and comes close everywhere else. Electron still leads on
-memory, first paint, and IPC latency on this platform.
+bunium wins on disk footprint, process boot time, process count, and RSS
+(both app shapes), and ties on IPC latency and DOM render. Electron still
+leads on first paint and idle CPU (though the CPU gap is now noise-level).
 
-Linux numbers currently favor bunium on paint time, RSS, and process count
-instead — the two platforms don't have the same shape, since they exercise
-different OS-level facilities. See `benchmark/RESULTS.md` for the full Linux
-table.
+macOS runs Chromium in `--single-process` mode (renderer + GPU + all
+utility services merged into one OS process) — a deliberate tradeoff, not
+a free win: it gives up the renderer/GPU process isolation that's normally
+Chromium's crash/security boundary against untrusted content, and disables
+PAC-based system proxy autoconfig. See [ARCHITECTURE.md
+§19](https://github.com/erfanmola/bunium/blob/main/ARCHITECTURE.md) for the
+full reasoning. **Not enabled on Linux/Windows** — pending independent
+verification there (Windows native bring-up hit a real crash with this
+flag in an earlier, different context — see [Dev from
+macOS](/guide/dev-from-mac)).
 
 ## What moved the numbers
-
-Two changes accounted for most of the gains during development:
 
 - **Adaptive message pump.** CEF's event loop now runs off an
   `external_message_pump` callback instead of polling on a fixed interval,
@@ -45,14 +51,9 @@ Two changes accounted for most of the gains during development:
   at creation time, so there's no "next tab" to pre-warm a spare renderer
   for — turning that Chromium feature off dropped process count and idle
   RSS on the minimal-app case.
-
-One more change, merging Chromium's GPU service into the browser process
-(`--in-process-gpu`), got bunium's process count and mini-app RSS below
-Electron's — but was reverted at the maintainer's request to keep GPU work
-isolated in its own OS process. `--single-process` was tested too (drops to
-one process entirely) but rejected: it also merges the *renderer*, which is
-Chromium's real security boundary against untrusted content a
-`<bunium-webview>` might load.
+- **`--single-process` + `--in-process-gpu`** (macOS only, see above) —
+  merges everything into one process. Real RSS/process-count win, no
+  measured perf cost, at the cost of crash isolation.
 
 Idle CPU dropped from ~59% to ~3% by disabling two Chromium features that
 have no purpose for a non-Electron embedder: Mach-port code-signature
@@ -61,11 +62,17 @@ Both are internal Chromium flags with no user-facing effect.
 
 ## Known gaps
 
-- **Windows IPC/idle-CPU numbers** reflect an earlier build before the
-  message-pump work landed for that platform — re-benchmark before citing
-  Windows numbers for anything other than "it runs."
-- Startup time (~300ms) traces to `CefInitialize()` itself spawning CEF's
-  subprocess tree — no bunium-side inefficiency found there so far.
+- First paint (~300ms) breaks down as roughly 112ms `CefInitialize()`, 35ms
+  one-time AppKit/WindowServer setup, 120ms renderer/Blink/V8 bootstrap —
+  real numbers, not a guess, from `BUNIUM_CEF_VERBOSE=1`'s `[startup-diag]`
+  output. The AppKit chunk is a real, quantified lever but not a quick fix
+  (see `ARCHITECTURE.md` §20 for why); the other two look like inherent
+  Chromium engine cost. Hardware-accelerated OSR
+  (`OnAcceleratedPaint`/shared textures) is blocked upstream on macOS, not
+  a bunium gap — CEF's own mac header says it's Windows-only today; see
+  the Roadmap.
+- Linux and Windows don't have a current-format table yet, and don't ship
+  the single-process change — see `benchmark/RESULTS.md`.
 
 ## Running the benchmarks yourself
 

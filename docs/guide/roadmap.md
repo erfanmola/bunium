@@ -20,6 +20,20 @@ automated tests on macOS, Linux, and Windows.
   and install-consumer scripts follow the same pattern already verified on
   macOS/Linux, but haven't had their first real run against a live Windows
   CEF build outside CI.
+- **`--single-process` on Linux/Windows.** Shipped on macOS only (real
+  process-count/RSS win, see [Benchmarks](/guide/benchmarks) and
+  ARCHITECTURE.md §19) — gated off elsewhere pending independent
+  verification on real hardware. Windows specifically has a documented
+  real crash risk with this flag from earlier native bring-up in a
+  different context, so treat it as higher-risk there than on Linux.
+- **Real GPU-accelerated OSR on Windows.** Unlike macOS (blocked upstream,
+  see below), Windows is the one platform CEF's own headers say
+  shared-texture OSR (`OnAcceleratedPaint`, D3D11) is actually supported
+  on. Current Windows paint path is CPU-readback GDI (`StretchDIBits`,
+  `native/win/bunium_window_win.cc`) — real, substantial, unstarted native
+  work: a D3D11 device/swap chain, `OnAcceleratedPaint` wired in place of
+  `OnPaint`, opening the per-frame shared texture handle. Scoped in
+  `PLAN.md`'s post-Phase-11 notes.
 - **`-webkit-app-region: no-drag`.** Draggable regions currently swallow
   every click inside them — an override for interactive elements (buttons,
   inputs) nested in a drag region, matching Electron's convention.
@@ -38,6 +52,14 @@ automated tests on macOS, Linux, and Windows.
 - **A cross-desktop global app menu on Linux** — no OS-level convention
   exists yet the way macOS/Windows have one; `Tray.setMenu()` is the
   current recommended substitute there.
+- **Real GPU-accelerated OSR on macOS — blocked upstream, not a bunium gap.**
+  CEF's shared-texture OSR path (`OnAcceleratedPaint`) would skip the
+  CPU-readback round-trip that currently makes GPU compositing measure
+  slower than software (see [Benchmarks](/guide/benchmarks)), but CEF's own
+  mac window-creation header says shared textures are "currently only
+  supported on Windows (D3D11)" — confirmed against this repo's vendored
+  CEF 151.3.16. Nothing to build until upstream CEF/Chromium ships mac
+  support; re-check a future CEF version before attempting this again.
 
 ## Contributing
 

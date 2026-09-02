@@ -66,6 +66,28 @@ cross-platform packaging/signing/updates, native OS color-scheme sync, a typed I
 - **Keep this skill file (and `PLAN.md`/`ARCHITECTURE.md`) updated as features land**, not just
   at big milestones — a skill file that's drifted from what the code actually does is worse than
   no skill file, because it actively misleads the next session.
+- **`docs/` is the public-facing site — keep it in sync with reality, separately from
+  PLAN.md/this skill file.** `PLAN.md`/`ARCHITECTURE.md`/this skill file are the internal
+  dev record (investigation narrative, phase checklists, rejected approaches — fine to be
+  verbose and historical there). `docs/guide/*.md`, `docs/api/index.md`, and `README.md` are
+  what a user of `bunium` (not a contributor to it) reads — they must never turn into another
+  copy of the dev log. Concretely: whenever a change alters a documented number, API surface,
+  or behavior, update the *docs* copy in the same pass, don't just log it in PLAN.md and move
+  on. In particular:
+  - Any perf-relevant native/pump/IPC change → update the numbers in
+    `docs/guide/benchmarks.md`'s table and, if it's a new full benchmark run,
+    `benchmark/RESULTS.md`'s per-OS table (one table per OS; a platform stays a `TODO`
+    placeholder there until someone actually re-runs `benchmark/scripts/report.ts` against
+    the current build on that OS — don't backfill it from memory/old PLAN.md numbers).
+  - Any change to `src/index.ts`'s public exports → update `docs/api/index.md`.
+  - Any change to `BuniumWindowOptions`/methods/getters → update `docs/guide/window.md`.
+  - New/changed system APIs (menu/tray/notification/dialog) → `docs/guide/system.md`.
+  - Packaging/publishing script or CI flow changes → `docs/guide/packaging.md` /
+    `docs/guide/publishing.md`.
+  - `benchmark/RESULTS.md` must stay a clean current-state results file, not an investigation
+    journal — root-cause narratives (why a fix worked, what was tried and reverted) belong in
+    `PLAN.md`'s phase notes, referenced from RESULTS.md by pointer if needed, not duplicated
+    inline.
 - **Bun version:** always keep on latest (`bun upgrade`), don't pin defensively. bunium only
   depends on Bun's public JS API surface (`bun:ffi`, `Bun.*`), so internal runtime changes
   shouldn't matter unless that public API itself changes.
@@ -103,6 +125,15 @@ cross-platform packaging/signing/updates, native OS color-scheme sync, a typed I
   the second concurrent process with "Aborting now to avoid profile corruption" (exit 21).
   Test scripts must run sequentially; parallel shells are fine. Real apps get a per-app
   `root_cache_path` at packaging time (Phase 8).
+- **Standing project decision (2026-09-02): process isolation doesn't matter for this project's
+  threat model, minimizing process count/RSS beats it, as long as CPU/memory/perf don't regress.**
+  This reversed an earlier explicit rejection of `--single-process`/`--in-process-gpu` (both now
+  shipped on macOS, `bunium_common.h`, see `ARCHITECTURE.md` §19). Real cost, not just
+  "less secure": a `<bunium-webview>`/page crash now takes the whole app down, and PAC-based
+  proxy autoconfig doesn't work in single-process mode — both documented, both accepted. Gated to
+  macOS only (`#if defined(__APPLE__)`) — Windows native bring-up hit a real crash with
+  `--single-process` in an unrelated context (`docs/guide/dev-from-mac.md`), so don't assume this
+  is safe to enable unconditionally on Linux/Windows without its own verification pass first.
 
 ## Phase 6 — Linux port (full examples/ sweep green, 2026-08-22)
 
@@ -285,8 +316,12 @@ binary file` + a GPU-process-crash loop until `bun run build:native:mac` was rer
   rewrite a no-space temp copy then `mv` it into place.
 - **Debug env vars** (all gated, safe to leave on): `BUNIUM_BUNDLE_DEBUG` (mainBundle
   identity dumps), `BUNIUM_CEF_VERBOSE` (CEF INFO logs + `[paint]`/`[load-*]`/`[scheme-*]`
-   - renderer `[context-created]`), `BUNIUM_CEF_SWITCHES` (inject browser switches — the
-     real argv is `bun <script>` so Chromium never parses post-script args as switches).
+   - renderer `[context-created]`, plus `[startup-diag] t=<steady_clock us> stage=<name>`
+     milestones from `cef_initialize_start` through `first_paint` — added 2026-09-02 for the
+     first-paint investigation, see ARCHITECTURE.md §20; reuse these instead of re-adding ad hoc
+     timing prints next time startup latency needs breaking down), `BUNIUM_CEF_SWITCHES` (inject
+     browser switches — the real argv is `bun <script>` so Chromium never parses post-script args
+     as switches).
 - **posix_spawn interposer** (`packaging/mac/spawn_interpose.mm`): build with `clang
 -dynamiclib -lc++`, load via `DYLD_INSERT_LIBRARIES` — but only when launching bun
   DIRECTLY (a `#!/bin/sh` launcher strips `DYLD_*` env). Must use the `__DATA,__interpose`
