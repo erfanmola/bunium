@@ -1,6 +1,6 @@
 {
   "name": "bunium",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Electron-like desktop app framework — Bun + CEF, not Node + Chromium-via-Electron.",
   "keywords": [
     "bun",
@@ -31,9 +31,9 @@
     "bun": ">=1.0.0"
   },
   "optionalDependencies": {
-    "bunium-darwin-arm64": "0.0.3",
-    "bunium-linux-x64": "0.0.3",
-    "bunium-win32-x64": "0.0.3"
+    "bunium-darwin-arm64": "0.0.4",
+    "bunium-linux-x64": "0.0.4",
+    "bunium-win32-x64": "0.0.4"
   },
   "scripts": {
     "build:native:mac": "native/mac/build.sh",
