@@ -2549,6 +2549,88 @@ arriving mid-wait still sat until that timer fired.
       are trustworthy (its 6-process tree was found correctly). Flagged as not-comparable in
       `benchmark/RESULTS.md` rather than reported as a false 300x Electron RSS win.
 
+## Post-Phase-11: `--single-process` independently re-verified on Linux/Windows, Linux RESULTS.md table filled in (2026-09-03 continuation)
+
+- [x] **Gap found: `benchmark/RESULTS.md`'s Linux table was still a placeholder** ("TODO,
+      next benchmarking pass") despite the prior session's PLAN.md entry above claiming Linux
+      numbers were recorded -- they existed only as a flagged-not-comparable aside, never
+      transcribed into the actual table. This session didn't trust that gap or the prior WSL2
+      findings at face value; re-did the full verification from scratch on different real
+      hardware (bare-metal x86_64 Arch Linux, not WSL2 -- a real bare-metal host happened to be
+      available this time, a strictly better test bed with no virtualization layer in the way).
+- [x] **Rebuilt Linux native clean** (`bash native/linux/build.sh` against the already-vendored
+      `vendor/cef-linux64`), ran the full `examples/*.ts` sweep via
+      `docker/linux/run-examples.sh` (works without Docker on this host -- all deps present
+      natively): 37/38, only the expected mac-only `color-scheme-live-test.ts` failure. Clean
+      baseline confirmed before touching anything.
+- [x] **Re-benchmarked Linux for real and filled in `benchmark/RESULTS.md`'s Linux table**
+      (`BENCH_REPS=5 BENCH_IDLE_SECONDS=6`, Xvfb + dbus-launch, same harness setup as before).
+      This host's `ps`-based process-tree walk correctly counted Electron's full helper tree (11
+      processes) -- unlike the prior WSL2 run, which undercounted it (`process_count: 1` for
+      Electron, a harness gap specific to that host). bunium wins process count (6 vs 11), both
+      idle-RSS rows (641.2MB vs 777.1MB minimal, 673.0MB vs 866.2MB mini-app), and first paint
+      (98ms vs 392ms) on this run; idle CPU ties at 0% for both, DOM render is a near-tie
+      (Electron edges it 1.0ms vs 1.1ms). Absolute RSS is much higher than macOS's numbers for
+      both browsers -- expected, this host has no GPU and both fall back to software compositing
+      under Xvfb; the relative bunium-vs-Electron comparison stays valid.
+- [x] **Independently re-verified `--single-process` is unsafe on Linux, on real bare-metal
+      hardware, not just re-trusting the earlier WSL2 finding.** Temporarily added `__linux__`
+      to the `#if defined(__APPLE__)` gate again, rebuilt, reran the full sweep: 36/38, only
+      `vite-dev-test.ts` newly failed -- hit a **new SIGTRAP core dump during `app.shutdown()`
+      cleanup**, reproducing the exact WSL2-era finding on completely different real hardware, so
+      not an artifact of that one host. Reran `vite-dev-test.ts` alone roughly 11 more times to
+      characterize it further: mostly hit the documented pre-existing cold-cache flake (dev
+      server never signals ready, clean exit 0, not a crash -- more frequent on this sandbox host
+      than the original dev machines, not new evidence by itself), but critically also surfaced a
+      **second, more consistently reproducible failure mode**: real HTTP `loadURL()` navigation
+      to a live localhost Vite server failing with `ERR_ABORTED` every time it got past the
+      ready-check, correlated with CEF logging `Cannot use V8 Proxy resolver in single process
+      mode` to stderr -- the same explicit CEF-side rejection independently observed on Windows.
+      `data:` URL navigations (`loadurl-test.ts`) are unaffected -- only real network loads break.
+      **Not enabling `--single-process` on Linux.** Reverted the gate back to `__APPLE__`-only
+      immediately (confirmed via `git diff` showing no drift against the committed state),
+      rebuilt Linux back to shipping config, reconfirmed clean (37/38, only the expected
+      mac-only failure) before recording the benchmark numbers above.
+- [x] **Independently re-verified `--single-process` is unsafe on Windows via the Tier 1
+      remote-Windows workflow, across two separate fresh CI runs** (not reusing the prior
+      session's run or trusting its conclusion untested). Created a new throwaway branch,
+      temporarily added a full-sweep step (reusing the existing `scripts/run-examples-win.sh`)
+      and a benchmark step to `win-smoke.yml`, ran it via `gh workflow run` + `gh run watch`.
+      Baseline (flag off, shipping config): 37/38 clean, fresh benchmark numbers captured (bunium
+      still wins both idle-RSS rows: 223.5MB vs 253.1MB minimal, 257.1MB vs 280.3MB mini-app,
+      tied 4-vs-4 process count; Electron still wins first paint, idle CPU, IPC RTT, and DOM
+      render by small margins -- consistent with the prior session's numbers, refreshed here).
+      With `_WIN32` added to the gate: process count did collapse to 1 and RSS improved further
+      (161.4MB / 192.4MB), confirming the flag mechanically works the same way as on macOS -- but
+      reran the flagged-on sweep twice (given the stakes) and got **two different real failure
+      sets**, not the same one twice: run 1 hit 36/38 (`vite-dev-test.ts` failed to become ready)
+      with the `Cannot use V8 Proxy resolver in single process mode` CEF error present in both
+      the smoke and packaged-app logs even on that mostly-green run; run 2 hit 35/38 with two
+      *new* failures -- `relaunch-test.ts` (shim timing assertion failed, `elapsed 5532ms <
+      5000ms`, a real behavioral regression, not just a hang) and `scheme-handler-test.ts` (hung
+      to timeout, same CEF proxy-resolver error logged first). Non-deterministic which test
+      breaks, but every run shares the identical root cause (CEF's own explicit rejection of
+      `--single-process` combined with its network stack on Windows) and at least one real new
+      failure beyond baseline each time -- this is what "genuinely unsafe" looks like as opposed
+      to "unverified," and it directly matches the pre-existing documented "bun + in-process CEF
+      SEGVs" risk from Windows native bring-up in `docs/guide/dev-from-mac.md`. **Not enabling
+      `--single-process` on Windows.** Reverted all temporary gate/workflow changes (confirmed
+      via `git diff main` showing no drift), committed the revert on the throwaway branch,
+      checked out `main`, deleted the throwaway branch both locally and on the remote.
+- [x] **Updated `benchmark/RESULTS.md`** with the real Linux table above (replacing the
+      placeholder), refreshed Windows table with today's re-measured baseline numbers, and
+      rewrote both platforms' `--single-process` rejection writeups with today's independent
+      findings. Also fixed a stale line in the macOS section that said Linux/Windows were
+      "gated... until independently verified elsewhere" -- both now have been, so it now says
+      both were independently verified and rejected. Updated `docs/guide/benchmarks.md` to say
+      "bare-metal x86_64" instead of "WSL2 Ubuntu 24.04" for Linux and to summarize today's
+      re-verification on both platforms.
+- **Verdict unchanged, now on stronger evidence:** `--single-process` stays gated to
+      `#if defined(__APPLE__)` in `native/mac/bunium_common.h` -- no code change was needed since
+      the gate was already correct, but it's now been independently re-confirmed unsafe on both
+      other platforms on fresh hardware/CI runs rather than resting on one prior verification
+      pass each.
+
 ## Post-Phase-11: real GPU-accelerated OSR on Windows -- planned, not started (concrete, unlike macOS)
 
 - [ ] **Windows is the one platform CEF's own headers say shared-texture OSR is actually
