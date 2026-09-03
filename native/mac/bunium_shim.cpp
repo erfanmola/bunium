@@ -363,10 +363,22 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
   CefMainArgs main_args(GetModuleHandleW(nullptr));
 #else
   CefMainArgs main_args(0, nullptr);
+  injected_argv.clear();
+  injected_argv.push_back("bunium");
+  // --no-proxy-server unconditionally, ahead of everything else: it must be
+  // in the real initial argv (base::CommandLine::Init), not appended later
+  // via BuniumApp::OnBeforeCommandLineProcessing in bunium_common.h --
+  // SystemNetworkContextManager reads the command line for its
+  // single-process + PAC/auto-proxy check before that callback's switches
+  // get merged back in, so a callback-only switch is invisible to it. Seen
+  // for real: GitHub Actions' macOS runners advertise PAC/WPAD auto-
+  // discovery (a plain dev Mac normally doesn't), which single-process mode
+  // can't resolve -- without this, that manifests as an outright aborted
+  // page load (ERR_ABORTED), not just the documented harmless log line
+  // (ARCHITECTURE.md #19), and broke the darwin-arm64 release build.
+  injected_argv.push_back("--no-proxy-server");
   const char *switches = getenv("BUNIUM_CEF_SWITCHES");
   if (switches && *switches) {
-    injected_argv.clear();
-    injected_argv.push_back("bunium");
     std::string s(switches);
     size_t pos = 0;
     while (pos <= s.size()) {
@@ -377,11 +389,11 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
         injected_argv.push_back(s.substr(pos, sp - pos));
       pos = sp + 1;
     }
-    for (auto &a : injected_argv)
-      argv_ptrs.push_back(a.data());
-    main_args =
-        CefMainArgs(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
   }
+  for (auto &a : injected_argv)
+    argv_ptrs.push_back(a.data());
+  main_args =
+      CefMainArgs(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
 #endif
 
   g_app = new BuniumApp();

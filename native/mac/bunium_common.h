@@ -790,16 +790,14 @@ public:
     // mac only until independently verified on those platforms, don't let a
     // shared-header change silently ship an unverified crash risk there.
     command_line->AppendSwitch("single-process");
-    // PAC-based proxy autoconfig is unsupported in single-process mode (see
-    // ARCHITECTURE.md #19) -- Chromium logs "Cannot use V8 Proxy resolver in
-    // single process mode" and, when the host OS advertises PAC/WPAD auto-
-    // discovery (observed on GitHub Actions' macOS runners, not on a plain
-    // dev Mac), that isn't just a log: page loads abort outright
-    // (ERR_ABORTED), which is what broke the CI release build's platform-
-    // package smoke test. Force direct connections instead of attempting
-    // (and failing) proxy autoconfig -- explicit proxy env vars / CEF proxy
-    // config still work, only PAC/auto-detect is affected either way.
-    command_line->AppendSwitch("no-proxy-server");
+    // --no-proxy-server (needed on GitHub Actions' macOS runners -- PAC/WPAD
+    // auto-discovery there breaks single-process mode outright, not just
+    // the documented harmless log line below) is injected into the real
+    // initial argv in bunium_shim.cpp's CefInitialize call instead of here:
+    // SystemNetworkContextManager reads the command line for its
+    // single-process + auto-proxy check before OnBeforeCommandLineProcessing
+    // switches get merged back in, so appending it only here is invisible
+    // to that check.
 #endif
     // Linux verification (2026-09-03, real hardware -- WSL2 Ubuntu 24.04
     // x64, native g++ build via native/linux/build.sh, not emulation):
