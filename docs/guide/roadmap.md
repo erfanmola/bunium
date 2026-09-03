@@ -20,12 +20,6 @@ automated tests on macOS, Linux, and Windows.
   and install-consumer scripts follow the same pattern already verified on
   macOS/Linux, but haven't had their first real run against a live Windows
   CEF build outside CI.
-- **`--single-process` on Linux/Windows.** Shipped on macOS only (real
-  process-count/RSS win, see [Benchmarks](/guide/benchmarks) and
-  ARCHITECTURE.md §19) — gated off elsewhere pending independent
-  verification on real hardware. Windows specifically has a documented
-  real crash risk with this flag from earlier native bring-up in a
-  different context, so treat it as higher-risk there than on Linux.
 - **Real GPU-accelerated OSR on Windows.** Unlike macOS (blocked upstream,
   see below), Windows is the one platform CEF's own headers say
   shared-texture OSR (`OnAcceleratedPaint`, D3D11) is actually supported

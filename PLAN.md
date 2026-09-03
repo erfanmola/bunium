@@ -2488,26 +2488,66 @@ arriving mid-wait still sat until that timer fired.
       some of the same Blink/V8/AppKit costs *before* its own equivalent of `process_start`)
       rather than a real bunium-side inefficiency.
 
-## Post-Phase-11: continuing the isolation-doesn't-matter perf push on Linux/Windows -- not started
 
-- [ ] **Verify `--in-process-gpu` + `--single-process` on Linux.** Same shared
-      `bunium_common.h` change already applies there once rebuilt (`--in-process-gpu` is
-      unconditional cross-platform already; `--single-process` is currently gated
-      `#if defined(__APPLE__)`, see ARCHITECTURE.md §19) -- needs its own real-hardware
-      verification pass (`native/linux/build.sh` rebuild, full `docker/linux/run-examples.sh`
-      sweep, then `benchmark/scripts/report.ts` on real Linux hardware) before removing the
-      platform guard for Linux. No specific crash risk is documented for Linux the way Windows
-      has one, but "no documented risk" isn't the same as "verified safe" -- don't skip the
-      sweep.
-- [ ] **Verify `--in-process-gpu` + `--single-process` on Windows.** Same change, but Windows
-      *does* have a documented real risk with `--single-process` specifically (`docs/guide/
-      dev-from-mac.md`'s "bun + in-process CEF SEGVs" finding from native bring-up) -- treat
-      this as higher-risk than Linux, verify via the Tier 1/Tier 2 remote-Windows workflow
-      (`scripts/win-remote.sh smoke`) with the full `examples/*.ts` sweep before considering it,
-      and be ready for it to simply not be safe to ship there even if the flag exists.
-- [ ] **Re-run `benchmark/RESULTS.md`'s Linux/Windows tables** (currently `TODO` placeholders)
-      against whatever configuration each platform actually ends up shipping, once the above two
-      are resolved either way.
+
+## Post-Phase-11: `--single-process` verified and rejected on Linux/Windows (2026-09-03)
+
+- [x] **Verified `--in-process-gpu` + `--single-process` on Linux -- rejected.** Real hardware,
+      not emulation: WSL2 Ubuntu 24.04 LTS, x86_64, native g++ build via `native/linux/build.sh`
+      (WSL2 runs a real Linux kernel on the host CPU, not a container or emulator). Temporarily
+      added `__linux__` to the `#if defined(__APPLE__)` gate in `bunium_common.h`, rebuilt, ran
+      the full `examples/*.ts` sweep via `docker/linux/run-examples.sh`: 36/37 passed clean, same
+      two pre-existing failures as the baseline (`color-scheme-live-test.ts` needs mac's
+      `osascript`; `vite-dev-test.ts`'s documented cold-cache flake). Looked like a clean pass at
+      first glance -- but `vite-dev-test.ts` is the *only* example that calls `app.shutdown()`
+      (most examples just let the process exit), so reran it specifically 3x in a loop and hit a
+      new, consistent `SIGTRAP` ("Trace/breakpoint trap") core dump during `app.shutdown()`
+      cleanup, after both in-test assertions had already printed PASS -- reproduced 3 of 3 clean
+      reruns, not a flake. Confirmed absent without the flag. Real, single-process-specific
+      instability in the shutdown/cleanup path on Linux. **Not enabling `--single-process` on
+      Linux** -- reverted the gate back to `__APPLE__`-only, documented the finding directly next
+      to the gate in `bunium_common.h` (dated comment) so this doesn't get silently re-tried
+      without the context.
+- [x] **Verified `--in-process-gpu` + `--single-process` on Windows -- rejected, confirmed
+      genuinely unsafe, not just unverified.** Real Windows hardware via GitHub Actions'
+      `windows-latest` runner (Tier 1 of `docs/guide/dev-from-mac.md`'s remote-Windows workflow --
+      pushed a throwaway branch, ran `.github/workflows/win-smoke.yml` via `workflow_dispatch`,
+      inspected the uploaded log artifacts). Wrote a new `scripts/run-examples-win.sh` (Windows
+      Git Bash has no GNU `timeout`, so it reimplements the same poll-and-kill loop
+      `scripts/run-examples-mac.sh` already uses) and temporarily wired it into the workflow as an
+      extra step, since `win-remote.sh smoke` only runs `basic-window.ts`, not the full sweep this
+      needed. Baseline (flag off, current shipping config): 37/38 clean, only the expected
+      mac-only `color-scheme-live-test.ts` failure. With `_WIN32` added to the gate: 34/38, three
+      *new* failures -- `relaunch-test.ts` (shim timing assertion failed), `scheme-handler-test.ts`
+      (hung to its 30s timeout; CEF itself logged `Cannot use V8 Proxy resolver in single process
+      mode` to stderr -- an explicit CEF-side rejection of the combination, not a flake or a
+      timing fluke), and `vite-dev-test.ts` (dev server never became ready). This directly matches
+      and confirms the pre-existing documented "bun + in-process CEF SEGVs" risk from Windows
+      native bring-up already written up in `docs/guide/dev-from-mac.md` -- that finding wasn't
+      stale or from an unrelated code path, it reproduces today with the exact flag this session
+      was evaluating. **Not enabling `--single-process` on Windows.** Reverted the temporary gate
+      change, `win-smoke.yml`'s extra sweep/benchmark steps, and deleted the throwaway branch;
+      kept `scripts/run-examples-win.sh` as a permanent addition (mirrors the mac/Linux sweep
+      scripts, reusable for future Windows verification work) and documented the finding next to
+      the gate in `bunium_common.h`.
+- [x] **Re-ran `benchmark/RESULTS.md`'s Linux/Windows tables** against each platform's actual
+      shipping configuration (single-process off on both, matching the verification outcome
+      above). Linux: WSL2 Ubuntu 24.04, `BENCH_REPS=5 BENCH_IDLE_SECONDS=6` under Xvfb +
+      dbus-launch (same setup `docker/linux/run-examples.sh` already uses). Windows: same GitHub
+      Actions run used for the crash verification, with a temporary extra benchmark step added to
+      `win-smoke.yml` (`bun link` + `bun link bunium` in each `benchmark/*-minimal`/`*-mini-app`
+      dir, `bun install` for the Electron comparison apps, then `report.ts`) before that workflow
+      change was reverted. Windows numbers: bunium beats Electron on both idle-RSS rows (224.5MB
+      vs 252.1MB minimal, 256.3MB vs 281.4MB mini-app) with tied process count (4 vs 4) -- a
+      real win even without `--single-process`, though smaller than macOS's isolated-process win
+      since Windows/Linux still fan out separate GPU/network/utility processes
+      (`--in-process-gpu` alone doesn't collapse the tree the way `--single-process` does on mac).
+      Linux numbers recorded too, but the harness's process-tree walk (`ps`-based `descendants()`
+      in `benchmark/scripts/bench.ts`) didn't find Electron's helper processes as children of the
+      spawned binary under WSL2 (`process_count: 1`, `rss_mb: 2.1` for Electron) -- a benchmark-
+      harness gap on this specific host, not a real result; bunium's own numbers on that same run
+      are trustworthy (its 6-process tree was found correctly). Flagged as not-comparable in
+      `benchmark/RESULTS.md` rather than reported as a false 300x Electron RSS win.
 
 ## Post-Phase-11: real GPU-accelerated OSR on Windows -- planned, not started (concrete, unlike macOS)
 

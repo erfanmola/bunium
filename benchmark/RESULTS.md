@@ -69,9 +69,38 @@ transcribed here — TODO, next benchmarking pass.
 
 ## Windows
 
-Not yet re-benchmarked against the current build with this table format. A real run
-happened on real Windows hardware during development (see `PLAN.md`) but is not
-transcribed here — TODO, next benchmarking pass.
+- Hardware: real Windows hardware — GitHub Actions `windows-latest` runner, via
+  `.github/workflows/win-smoke.yml` (Tier 1 of `docs/guide/dev-from-mac.md`'s
+  remote-Windows workflow), clang-cl build via `native/win/build.sh`
+- bun 1.4.0, Electron (bundled version resolved by `bun install` on the runner)
+- 5 reps/scenario, median
+- Measured 2026-09-03, `BENCH_REPS=5 BENCH_IDLE_SECONDS=6`
+
+| metric | bunium | Electron | winner |
+|---|---|---|---|
+| process count (main + helpers) | 4 | 4 | tied |
+| idle RSS, minimal app | **224.5 MB** | 252.1 MB | **bunium** |
+| idle RSS, mini-app | **256.3 MB** | 281.4 MB | **bunium** |
+| first paint after launch | 255 ms | 164 ms | Electron |
+| first paint, mini-app | 279 ms | 213 ms | Electron |
+| idle CPU, full process tree | 3.1% | 0% | Electron |
+| IPC round trip (median avg-of-50) | 0.5 ms | 0.3 ms | Electron |
+| mini-app DOM render, 200 rows | 3.9 ms | 2.9 ms | Electron |
+
+**`--single-process` was tested on Windows and rejected — confirmed genuinely
+unsafe, not just unverified.** Baseline full `examples/*.ts` sweep (flag off): 37/38
+clean (only the expected mac-only `color-scheme-live-test.ts` failure). With the flag
+added: 34/38, three *new* failures not present in the baseline —
+`relaunch-test.ts` (shim timing assertion failed), `scheme-handler-test.ts` (hung to
+timeout; CEF itself logged `Cannot use V8 Proxy resolver in single process mode` —
+an explicit CEF-side rejection of the combination, not a flake), and
+`vite-dev-test.ts` (dev server never became ready). This matches and confirms the
+pre-existing documented "bun + in-process CEF SEGVs" risk from Windows native
+bring-up noted in `docs/guide/dev-from-mac.md`. See the dated comment in
+`native/mac/bunium_common.h` next to the `--single-process` gate for the full repro
+notes, and `PLAN.md`'s post-Phase-11 section for the investigation writeup. The
+numbers above are the shipping configuration: no `--single-process`, no
+`--in-process-gpu`.
 
 ## Framework/runtime on-disk size (macOS)
 

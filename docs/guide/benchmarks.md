@@ -4,8 +4,10 @@ Measured 2026-09-02 on an Apple M2 Pro (macOS, arm64), bun 1.4.0 vs Electron
 44.0.0, median of 5 runs per scenario. Full methodology, raw data, and the
 benchmark harness itself live in
 [`benchmark/`](https://github.com/erfanmola/bunium/tree/main/benchmark).
-Linux and Windows tables are still a work in progress — see
-[`benchmark/RESULTS.md`](https://github.com/erfanmola/bunium/tree/main/benchmark/RESULTS.md).
+Linux (real WSL2 Ubuntu 24.04 hardware) and Windows (real Windows hardware via
+GitHub Actions) numbers are now measured too — see
+[`benchmark/RESULTS.md`](https://github.com/erfanmola/bunium/tree/main/benchmark/RESULTS.md)
+for those tables.
 
 Two comparable app pairs, same UI on both sides:
 
@@ -37,10 +39,16 @@ a free win: it gives up the renderer/GPU process isolation that's normally
 Chromium's crash/security boundary against untrusted content, and disables
 PAC-based system proxy autoconfig. See [ARCHITECTURE.md
 §19](https://github.com/erfanmola/bunium/blob/main/ARCHITECTURE.md) for the
-full reasoning. **Not enabled on Linux/Windows** — pending independent
-verification there (Windows native bring-up hit a real crash with this
-flag in an earlier, different context — see [Dev from
-macOS](/guide/dev-from-mac)).
+full reasoning. **Not enabled on Linux or Windows** — both were tested and
+rejected, not just left unverified. On Linux (real WSL2 Ubuntu 24.04
+hardware), `examples/vite-dev-test.ts` reproduced a consistent `SIGTRAP`
+crash during `app.shutdown()` cleanup, 3 of 3 reruns. On Windows (real
+Windows hardware via GitHub Actions), three examples newly failed with the
+flag on — including CEF itself logging `Cannot use V8 Proxy resolver in
+single process mode` — confirming the real crash risk already documented
+from Windows native bring-up (see [Dev from
+macOS](/guide/dev-from-mac)). Full repro notes: `native/mac/bunium_common.h`
+next to the `--single-process` gate, and `benchmark/RESULTS.md`.
 
 ## What moved the numbers
 
@@ -71,8 +79,9 @@ Both are internal Chromium flags with no user-facing effect.
   (`OnAcceleratedPaint`/shared textures) is blocked upstream on macOS, not
   a bunium gap — CEF's own mac header says it's Windows-only today; see
   the Roadmap.
-- Linux and Windows don't have a current-format table yet, and don't ship
-  the single-process change — see `benchmark/RESULTS.md`.
+- Linux and Windows now have current-format tables in `benchmark/RESULTS.md`,
+  but neither ships the single-process change — both were tested and found
+  unsafe (see above).
 
 ## Running the benchmarks yourself
 

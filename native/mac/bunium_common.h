@@ -791,6 +791,38 @@ public:
     // shared-header change silently ship an unverified crash risk there.
     command_line->AppendSwitch("single-process");
 #endif
+    // Linux verification (2026-09-03, real hardware -- WSL2 Ubuntu 24.04
+    // x64, native g++ build via native/linux/build.sh, not emulation):
+    // tested with __linux__ temporarily added to the gate above. Full
+    // examples/*.ts sweep: 36/37 passed clean (same 2 pre-existing
+    // failures as the baseline without this flag -- color-scheme-live-
+    // test.ts needs macOS's osascript, and the vite-dev-test cold-cache
+    // flake). BUT examples/vite-dev-test.ts also reproduced a NEW,
+    // consistently reproducible crash (3 of 3 reruns, not a flake) not
+    // present in the baseline: SIGTRAP ("Trace/breakpoint trap"), core
+    // dump, during app.shutdown() cleanup -- after both in-test assertions
+    // had already passed. Real, single-process-specific instability on
+    // Linux, not present without the flag. NOT enabling --single-process
+    // on Linux as a result -- see benchmark/RESULTS.md and PLAN.md's
+    // Linux verification notes for the full repro and reasoning.
+    //
+    // Windows verification (2026-09-03, real hardware -- GitHub Actions
+    // windows-latest via .github/workflows/win-smoke.yml, Tier 1 of
+    // docs/guide/dev-from-mac.md's remote-Windows workflow, clang-cl build
+    // via native/win/build.sh): tested with _WIN32 temporarily added to the
+    // gate above. Baseline (flag off) full examples/*.ts sweep: 37/38 clean
+    // (only the expected mac-only color-scheme-live-test.ts failure). With
+    // the flag on: 34/38, three NEW failures not present in the baseline --
+    // relaunch-test.ts (shim timing assertion failed), scheme-handler-
+    // test.ts (hung to timeout, CEF logged "Cannot use V8 Proxy resolver in
+    // single process mode" -- an explicit CEF-side rejection of this
+    // combination, not a flake), and vite-dev-test.ts (dev server never
+    // became ready). This matches and confirms the pre-existing documented
+    // "bun + in-process CEF SEGVs" risk from Windows native bring-up in
+    // docs/guide/dev-from-mac.md. NOT enabling --single-process on Windows
+    // -- confirmed genuinely unsafe to ship there, not just unverified. See
+    // benchmark/RESULTS.md and PLAN.md's Windows verification notes for the
+    // full repro and reasoning.
     // Chromium's spare-renderer-process feature pre-spawns an idle renderer
     // ahead of the next navigation as a latency optimization for real
     // browsers with tabs/link-clicking. A bunium window's one navigation is
