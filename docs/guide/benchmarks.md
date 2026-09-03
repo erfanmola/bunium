@@ -4,7 +4,7 @@ Measured 2026-09-02 on an Apple M2 Pro (macOS, arm64), bun 1.4.0 vs Electron
 44.0.0, median of 5 runs per scenario. Full methodology, raw data, and the
 benchmark harness itself live in
 [`benchmark/`](https://github.com/erfanmola/bunium/tree/main/benchmark).
-Linux (real WSL2 Ubuntu 24.04 hardware) and Windows (real Windows hardware via
+Linux (real bare-metal x86_64 hardware) and Windows (real Windows hardware via
 GitHub Actions) numbers are now measured too — see
 [`benchmark/RESULTS.md`](https://github.com/erfanmola/bunium/tree/main/benchmark/RESULTS.md)
 for those tables.
@@ -39,14 +39,18 @@ a free win: it gives up the renderer/GPU process isolation that's normally
 Chromium's crash/security boundary against untrusted content, and disables
 PAC-based system proxy autoconfig. See [ARCHITECTURE.md
 §19](https://github.com/erfanmola/bunium/blob/main/ARCHITECTURE.md) for the
-full reasoning. **Not enabled on Linux or Windows** — both were tested and
-rejected, not just left unverified. On Linux (real WSL2 Ubuntu 24.04
-hardware), `examples/vite-dev-test.ts` reproduced a consistent `SIGTRAP`
-crash during `app.shutdown()` cleanup, 3 of 3 reruns. On Windows (real
-Windows hardware via GitHub Actions), three examples newly failed with the
-flag on — including CEF itself logging `Cannot use V8 Proxy resolver in
-single process mode` — confirming the real crash risk already documented
-from Windows native bring-up (see [Dev from
+full reasoning. **Not enabled on Linux or Windows** — both were independently
+re-verified and rejected on 2026-09-03, not just left unverified. On Linux
+(real bare-metal x86_64 hardware, not a VM), `examples/vite-dev-test.ts`
+reproduced the same `SIGTRAP` crash during `app.shutdown()` cleanup seen on
+an earlier WSL2 host, plus a newly observed, more consistently reproducible
+failure: real HTTP page loads failing outright (`ERR_ABORTED`) alongside CEF
+logging `Cannot use V8 Proxy resolver in single process mode`. On Windows
+(real Windows hardware via GitHub Actions, two independent CI runs), each run
+turned up at least one real new example failure not present in the baseline
+— different examples each time, but every failure traced back to that same
+CEF-side proxy-resolver rejection, confirming the real crash risk already
+documented from Windows native bring-up (see [Dev from
 macOS](/guide/dev-from-mac)). Full repro notes: `native/mac/bunium_common.h`
 next to the `--single-process` gate, and `benchmark/RESULTS.md`.
 
