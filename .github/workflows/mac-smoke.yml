@@ -78,7 +78,7 @@ jobs:
         env:
           BUNIUM_CEF_VERBOSE: "1"
           BUNIUM_BUNDLE_DEBUG: "1"
-          BUNIUM_CEF_SWITCHES: "--disable-gpu --disable-gpu-compositing"
+          BUNIUM_CEF_SWITCHES: "--disable-gpu --disable-gpu-compositing --no-proxy-server"
         run: |
           # Run under lldb batch mode so a silent/no-report crash (the class
           # seen previously on this GPU-less runner) still yields a real
@@ -104,7 +104,7 @@ jobs:
           # Same GPU-less-runner fix as the smoke step above -- the packaged
           # launcher execs bun directly and inherits this env, but doesn't
           # get it for free just because the dev-mode step above set it.
-          BUNIUM_CEF_SWITCHES: "--disable-gpu --disable-gpu-compositing"
+          BUNIUM_CEF_SWITCHES: "--disable-gpu --disable-gpu-compositing --no-proxy-server"
         run: |
           bash packaging/mac/package.sh \
             -a packaging/mac/fixture-app -n BuniumFixture \

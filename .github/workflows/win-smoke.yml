@@ -88,6 +88,8 @@ jobs:
       - name: Package fixture app + verify packaged run
         shell: bash
         timeout-minutes: 8
+        env:
+          BUNIUM_CEF_SWITCHES: "--no-proxy-server"
         run: |
           export PATH="$GITHUB_WORKSPACE/native/build:$PATH"
           bash packaging/win/package.sh \

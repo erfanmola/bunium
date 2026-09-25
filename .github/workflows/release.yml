@@ -88,6 +88,8 @@ jobs:
          - name: Verify installed-consumer path
            # Requires paint plus trusted/untrusted origin and subframe checks
            # against the staged native package.
+           env:
+              BUNIUM_CEF_SWITCHES: "--no-proxy-server"
            run: |
               scripts/verify-platform-package.sh | tee verify.log
               grep -q "TRUSTED_ORIGIN_VERIFY:PASS" verify.log
@@ -148,6 +150,8 @@ jobs:
            run: bun run release:artifacts:linux -- -v "$RELEASE_VERSION"
 
          - name: Verify installed-consumer path
+           env:
+              BUNIUM_CEF_SWITCHES: "--no-proxy-server"
            run: |
               Xvfb :99 -screen 0 1024x768x24 &
               sleep 1
@@ -223,6 +227,8 @@ jobs:
 
          - name: Verify installed-consumer path
            shell: bash
+           env:
+              BUNIUM_CEF_SWITCHES: "--no-proxy-server"
            run: |
               bash scripts/verify-platform-package-win.sh | tee verify.log
               grep -q "TRUSTED_ORIGIN_VERIFY:PASS" verify.log
