@@ -51,8 +51,10 @@ const poll = async (): Promise<void> => {
     return;
   }
   console.log("center pixel BGR:", b, g, r);
-  win.close();
+  // Keep the primary browser alive while creating policy-test windows. Some
+  // CEF builds tear down shared network state when the last browser closes.
   const trustedOriginPassed = await verifyTrustedOriginBridge();
+  win.close();
   if (!trustedOriginPassed) {
     app.shutdown();
     process.exit(1);

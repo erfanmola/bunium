@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { app, BuniumWindow } from "bunium";
 import { verifyTrustedOriginBridge } from "./trusted-origin-smoke";
 
@@ -8,8 +9,10 @@ import { verifyTrustedOriginBridge } from "./trusted-origin-smoke";
 // reachable from here, so src/paths.ts must fall back to the platform
 // package -- if it instead resolves nothing usable, dlopen fails and window
 // creation crashes.
+app.setAppRoot(join(import.meta.dirname, "dist"));
 const win = new BuniumWindow({
-  url: "data:text/html,<style>body{margin:0;background:rgb(0,255,0)}</style>",
+  url: "bunium://app/",
+  trustedOrigins: ["bunium://app"],
   width: 320,
   height: 240,
   title: "platform package smoke",
@@ -23,7 +26,7 @@ const b = shot.data[idx]!;
 const g = shot.data[idx + 1]!;
 const r = shot.data[idx + 2]!;
 console.log("center pixel BGR:", b, g, r);
-const paintPassed = r < 20 && g > 235 && b < 20;
+const paintPassed = r >= 40 && r < 60 && g > 190 && b < 60;
 const trustedOriginPassed = paintPassed && (await verifyTrustedOriginBridge());
 console.log(
   trustedOriginPassed

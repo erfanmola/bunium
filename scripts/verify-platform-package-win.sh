@@ -46,6 +46,7 @@ tar -C "$PKG_DIR" -cf - . | (cd "$CONSUMER/node_modules/$PKG_NAME" && tar -xf -)
 # "bunium-win32-x64" walks the consumer's own node_modules.
 cp "$SCRIPT_DIR/verify-platform-package-main.ts" "$CONSUMER/main.ts"
 cp "$SCRIPT_DIR/trusted-origin-smoke.ts" "$CONSUMER/trusted-origin-smoke.ts"
+cp -R "$REPO_ROOT/packaging/mac/fixture-app/dist" "$CONSUMER/dist"
 
 cd "$CONSUMER"
 BUN_BIN="$(command -v bun)"

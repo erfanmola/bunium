@@ -280,6 +280,11 @@ function encodeTrustedOrigins(origins: string[] | undefined): string {
     }
     const canonical =
       parsed.protocol === "bunium:" ? `bunium://${parsed.host}` : parsed.origin;
+    if (parsed.protocol === "bunium:" && parsed.port) {
+      throw new TypeError(
+        `trustedOrigins bunium entries cannot specify a port: ${origin}`,
+      );
+    }
     if (
       !canonical ||
       canonical === "null" ||
@@ -316,6 +321,7 @@ export class BuniumWindow<M extends BuniumMessageMap = BuniumMessageMap>
   private webviews: WebviewManager;
 
   constructor(options: BuniumWindowOptions) {
+    const trustedOrigins = encodeTrustedOrigins(options.trustedOrigins);
     app.init();
 
     const width = options.width ?? 800;
@@ -374,7 +380,7 @@ export class BuniumWindow<M extends BuniumMessageMap = BuniumMessageMap>
         width,
         height,
         transparent ? 1 : 0,
-        cstr(encodeTrustedOrigins(options.trustedOrigins)),
+        cstr(trustedOrigins),
       )!,
     );
 

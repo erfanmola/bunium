@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+   <head>
+      <meta charset="utf-8" />
+      <title>trusted origin child fixture</title>
+   </head>
+   <body>
+      <script>
+         parent.__bunium.send(
+            "fixture-subframe-exploit",
+            JSON.stringify("blocked"),
+         );
+         document.documentElement.dataset.loaded = "true";
+      </script>
+   </body>
+</html>

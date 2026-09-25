@@ -8,6 +8,27 @@
       <script>
          console.log("fixture: renderer script running");
          document.body.style.background = "limegreen";
+         const params = new URLSearchParams(window.location.search);
+         if (params.has("trusted-origin-smoke")) {
+            window.__bunium.send(
+               "fixture-trusted-origin",
+               JSON.stringify("ok"),
+            );
+            setTimeout(() => {
+               const frame = document.createElement("iframe");
+               frame.src = "/trusted-origin-child.html";
+               document.body.append(frame);
+               setTimeout(() => {
+                  const loaded =
+                     frame.contentDocument?.documentElement?.dataset.loaded ===
+                     "true";
+                  window.__bunium.send(
+                     "fixture-subframe-attempted",
+                     JSON.stringify(loaded ? "loaded" : "blocked"),
+                  );
+               }, 1000);
+            }, 200);
+         }
       </script>
    </body>
 </html>

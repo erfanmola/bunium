@@ -34,6 +34,7 @@ ln -sfn "$PKG_DIR" "$CONSUMER/node_modules/bunium-darwin-arm64"
 # "bunium-darwin-arm64" walks the consumer's own node_modules.
 cp "$SCRIPT_DIR/verify-platform-package-main.ts" "$CONSUMER/main.ts"
 cp "$SCRIPT_DIR/trusted-origin-smoke.ts" "$CONSUMER/trusted-origin-smoke.ts"
+cp -R "$REPO_ROOT/packaging/mac/fixture-app/dist" "$CONSUMER/dist"
 
 cd "$CONSUMER"
 bun main.ts

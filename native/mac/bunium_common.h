@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -40,6 +41,29 @@
 #include "include/cef_scheme.h"
 #include "include/cef_values.h"
 #include "include/cef_v8.h"
+
+// CEF's parts.origin omits explicit ports for custom standard schemes on
+// some builds. Construct the tuple origin from the parsed components so
+// bunium://app:8484 stays distinct from bunium://app like the web origin
+// model requires. Omit only URL-standard default ports.
+static std::string BuniumOriginFromParts(const CefURLParts &parts) {
+  std::string scheme = CefString(&parts.scheme).ToString();
+  std::string host = CefString(&parts.host).ToString();
+  std::string port = CefString(&parts.port).ToString();
+  if (scheme.empty() || host.empty())
+    return "";
+  std::transform(scheme.begin(), scheme.end(), scheme.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  std::transform(host.begin(), host.end(), host.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  if ((scheme == "http" && port == "80") ||
+      (scheme == "https" && port == "443") ||
+      (scheme == "ws" && port == "80") ||
+      (scheme == "wss" && port == "443") ||
+      (scheme == "ftp" && port == "21"))
+    port.clear();
+  return scheme + "://" + host + (port.empty() ? "" : ":" + port);
+}
 
 // Injected once per page (alongside the reportBounds/send/on bootstrap in
 // BuniumApp::OnContextCreated below) -- registers a real <bunium-webview>
@@ -324,9 +348,7 @@ public:
     CefURLParts parts;
     if (!CefParseURL(request->GetURL(), parts))
       return false;
-    std::string origin = CefString(&parts.origin).ToString();
-    if (!origin.empty() && origin.back() == '/')
-      origin.pop_back();
+    std::string origin = BuniumOriginFromParts(parts);
     return std::find(trusted_origins_.begin(), trusted_origins_.end(), origin) !=
            trusted_origins_.end();
   }
@@ -568,9 +590,7 @@ private:
     CefURLParts parts;
     if (!CefParseURL(frame->GetURL(), parts))
       return false;
-    std::string origin = CefString(&parts.origin).ToString();
-    if (!origin.empty() && origin.back() == '/')
-      origin.pop_back();
+    std::string origin = BuniumOriginFromParts(parts);
     return std::find(trusted_origins_.begin(), trusted_origins_.end(), origin) !=
            trusted_origins_.end();
   }
@@ -834,9 +854,7 @@ public:
             parts.password.length == 0 && parts.query.length == 0 &&
             parts.fragment.length == 0 &&
             (parts.path.length == 0 || CefString(&parts.path).ToString() == "/")) {
-          std::string origin = CefString(&parts.origin).ToString();
-          if (!origin.empty() && origin.back() == '/')
-            origin.pop_back();
+          std::string origin = BuniumOriginFromParts(parts);
           if (rule == origin || rule == origin + "/")
             origins.push_back(origin);
         }
@@ -1037,9 +1055,7 @@ public:
     if (!frame->IsMain() || trusted == trusted_origins_.end() ||
         !CefParseURL(frame->GetURL(), parts))
       return;
-    std::string origin = CefString(&parts.origin).ToString();
-    if (!origin.empty() && origin.back() == '/')
-      origin.pop_back();
+    std::string origin = BuniumOriginFromParts(parts);
     if (std::find(trusted->second.begin(), trusted->second.end(), origin) ==
         trusted->second.end())
       return;
