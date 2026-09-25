@@ -93,6 +93,7 @@ jobs:
           bash packaging/win/package.sh \
             -a packaging/mac/fixture-app -n BuniumFixture -o dist-app 2>&1 | tee pack.log
           ./dist-app/BuniumFixture/BuniumFixture.exe 2>&1 | tee pack-verify.log
+          grep -q "TRUSTED_ORIGIN_VERIFY:PASS" pack-verify.log
           grep -q "PACKAGED_APP_VERIFY:PASS" pack-verify.log
 
       - name: Upload logs + artifacts

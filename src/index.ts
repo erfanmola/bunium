@@ -44,4 +44,4 @@ export {
   updater,
 } from "./update";
 export type { BuniumWindowOptions } from "./window";
-export { BuniumWindow } from "./window";
+export { BuniumWindow, trustedOriginsApiVersion } from "./window";

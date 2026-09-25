@@ -8,6 +8,7 @@
 // whose main loop runs until the user quits.
 import { join } from "node:path";
 import { app, BuniumWindow } from "bunium";
+import { verifyTrustedOriginBridge } from "./trusted-origin-smoke";
 
 const distDir = join(import.meta.dirname, "..", "dist");
 app.setAppRoot(distDir);
@@ -20,7 +21,7 @@ const win = new BuniumWindow({
 });
 
 const deadline = Date.now() + 15000;
-const poll = (): void => {
+const poll = async (): Promise<void> => {
   if (Date.now() > deadline) {
     console.error(
       "PACKAGED_APP_VERIFY:FAIL (timeout waiting for a green frame)",
@@ -50,8 +51,13 @@ const poll = (): void => {
     return;
   }
   console.log("center pixel BGR:", b, g, r);
-  console.log("PACKAGED_APP_VERIFY:PASS");
   win.close();
+  const trustedOriginPassed = await verifyTrustedOriginBridge();
+  if (!trustedOriginPassed) {
+    app.shutdown();
+    process.exit(1);
+  }
+  console.log("PACKAGED_APP_VERIFY:PASS");
   app.shutdown();
   process.exit(0);
 };

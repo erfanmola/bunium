@@ -5,6 +5,8 @@ import { asPointer, cstr, lib } from "./native";
 
 export interface BuniumWindowOptions {
   url: string;
+  /** Exact origins allowed to receive Bunium's native host bridge. Defaults to none. */
+  trustedOrigins?: string[];
   width?: number;
   height?: number;
   title?: string;
@@ -38,6 +40,10 @@ export interface BuniumWindowOptions {
    */
   trafficLightPosition?: { x: number; y: number };
 }
+
+/** Native capability version for consumers that require origin-bound IPC. */
+export const trustedOriginsApiVersion =
+  lib.symbols.bunium_trusted_origins_api_version();
 
 // Reserved message name for the automatic draggable-region scanner injected
 // into every page (see BuniumApp::OnContextCreated, bunium_common.h) --
@@ -260,6 +266,37 @@ export type BuniumMessageMap = Record<string, any>;
 
 type MessageListener<T> = (payload: T) => void;
 
+function encodeTrustedOrigins(origins: string[] | undefined): string {
+  const values = origins ?? [];
+  for (const origin of values) {
+    if (origin.includes("\n") || origin.includes("\r")) {
+      throw new TypeError("trustedOrigins entries must be single-line origins");
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      throw new TypeError(`Invalid trusted origin: ${origin}`);
+    }
+    const canonical =
+      parsed.protocol === "bunium:" ? `bunium://${parsed.host}` : parsed.origin;
+    if (
+      !canonical ||
+      canonical === "null" ||
+      (origin !== canonical && origin !== `${canonical}/`) ||
+      parsed.username ||
+      parsed.password ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      throw new TypeError(
+        `trustedOrigins entry must be an exact origin: ${origin}`,
+      );
+    }
+  }
+  return values.join("\n");
+}
+
 // First public API surface of the framework. Deliberately thin -- it wraps
 // the native handles from bunium_shim's flat C ABI, nothing more yet. No
 // close callback yet.
@@ -332,11 +369,12 @@ export class BuniumWindow<M extends BuniumMessageMap = BuniumMessageMap>
     }
 
     this.viewHandle = asPointer(
-      lib.symbols.bunium_create_view(
+      lib.symbols.bunium_create_trusted_view(
         cstr(options.url),
         width,
         height,
         transparent ? 1 : 0,
+        cstr(encodeTrustedOrigins(options.trustedOrigins)),
       )!,
     );
 

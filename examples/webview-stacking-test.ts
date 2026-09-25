@@ -22,7 +22,7 @@ function clickablePage(bg: string) {
 // z-index 2 (on top), "bottom" with z-index 1 (underneath). A small script
 // listens for a 'set-z' message from the main side so the test can flip
 // stacking order mid-run and verify _syncOrder picks it up.
-const outerHtml = `data:text/html,${encodeURIComponent(`
+const outerHtml = `
 <body style="margin:0">
 <div id="box" style="width:100%;height:100%;background:red"></div>
 <bunium-webview id="bottom" src="${clickablePage("blue")}"
@@ -37,10 +37,18 @@ window.__bunium.on('set-z', function(payload) {
 });
 </script>
 </body>
-`)}`;
+`;
+const server = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  fetch: () =>
+    new Response(outerHtml, { headers: { "content-type": "text/html" } }),
+});
+const origin = server.url.origin;
 
 const win = new BuniumWindow({
-  url: outerHtml,
+  url: `${origin}/`,
+  trustedOrigins: [origin],
   width: 600,
   height: 400,
   title: "webview stacking test",
@@ -122,4 +130,5 @@ console.log(
 );
 
 win.close();
+server.stop();
 app.shutdown();

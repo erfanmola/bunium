@@ -183,6 +183,9 @@ fi
 # "import { app } from 'bunium'" resolves inside the bundle. ---
 resource_app="$APP_BUNDLE/Contents/Resources/app"
 rsync -a --exclude node_modules --exclude .git "$APP_DIR/" "$resource_app/"
+# The verifier and packaged fixture share this origin-policy test so the
+# installed-consumer release gate exercises the same negative cases.
+cp "$REPO_ROOT/scripts/trusted-origin-smoke.ts" "$resource_app/bunium/trusted-origin-smoke.ts"
 # materialize the bunium package itself (src/ + package.json only -- the
 # native dylibs live in Frameworks/, reached via the launcher's env vars)
 mkdir -p "$resource_app/node_modules/bunium"

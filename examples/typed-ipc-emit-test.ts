@@ -4,7 +4,7 @@ interface AppMessages {
   "set-color": { color: string };
 }
 
-const html = `data:text/html,${encodeURIComponent(`
+const html = `
 <body style="margin:0">
 <div id="box" style="width:300px;height:200px;background:red"></div>
 <script>
@@ -13,10 +13,17 @@ const html = `data:text/html,${encodeURIComponent(`
   });
 </script>
 </body>
-`)}`;
+`;
+const server = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  fetch: () => new Response(html, { headers: { "content-type": "text/html" } }),
+});
+const origin = server.url.origin;
 
 const win = new BuniumWindow<AppMessages>({
-  url: html,
+  url: `${origin}/`,
+  trustedOrigins: [origin],
   width: 300,
   height: 200,
 });
@@ -62,4 +69,5 @@ console.log(
 );
 
 win.close();
+server.stop();
 app.shutdown();

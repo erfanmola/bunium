@@ -18,7 +18,7 @@ import { lib } from "../src/native";
 const innerPage = (bg: string) =>
   `data:text/html,${encodeURIComponent(`<body style="margin:0;background:${bg}"></body>`)}`;
 
-const outerHtml = `data:text/html,${encodeURIComponent(`
+const outerHtml = `
 <body style="margin:0">
   <div style="position:absolute;left:50px;top:50px;width:150px;height:150px;overflow:hidden;background:#333">
     <bunium-webview id="clipped" src="${innerPage("blue")}"
@@ -29,10 +29,18 @@ const outerHtml = `data:text/html,${encodeURIComponent(`
     style="position:absolute;left:300px;top:50px;width:150px;height:150px;">
   </bunium-webview>
 </body>
-`)}`;
+`;
+const server = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  fetch: () =>
+    new Response(outerHtml, { headers: { "content-type": "text/html" } }),
+});
+const origin = server.url.origin;
 
 const win = new BuniumWindow({
-  url: outerHtml,
+  url: `${origin}/`,
+  trustedOrigins: [origin],
   width: 600,
   height: 400,
   title: "webview clip test",
@@ -105,4 +113,5 @@ const controlCorrect = unclippedResult.clipped === false;
 console.log("unclipped control element has no active clip:", controlCorrect);
 
 win.close();
+server.stop();
 app.shutdown();

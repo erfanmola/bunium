@@ -31,6 +31,7 @@ if (process.platform === "win32") {
 export const rootCachePath = process.env.BUNIUM_ROOT_CACHE_PATH ?? "";
 
 export const lib = dlopen(paths.shim, {
+  bunium_trusted_origins_api_version: { args: [], returns: FFIType.i32 },
   bunium_init: {
     args: [FFIType.cstring, FFIType.cstring, FFIType.cstring, FFIType.cstring],
     returns: FFIType.i32,
@@ -59,6 +60,16 @@ export const lib = dlopen(paths.shim, {
   bunium_set_app_root: { args: [FFIType.cstring], returns: FFIType.void },
   bunium_create_view: {
     args: [FFIType.cstring, FFIType.i32, FFIType.i32, FFIType.i32],
+    returns: FFIType.ptr,
+  },
+  bunium_create_trusted_view: {
+    args: [
+      FFIType.cstring,
+      FFIType.i32,
+      FFIType.i32,
+      FFIType.i32,
+      FFIType.cstring,
+    ],
     returns: FFIType.ptr,
   },
   bunium_navigate: {

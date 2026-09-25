@@ -24,7 +24,7 @@ const innerPage = (bg: string) =>
 </body>
 `)}`;
 
-const outerHtml = `data:text/html,${encodeURIComponent(`
+const outerHtml = `
 <body style="margin:0">
 <div id="obox" style="width:100%;height:100%;background:red"
      onclick="document.getElementById('obox').style.background='lime'"></div>
@@ -34,10 +34,18 @@ const outerHtml = `data:text/html,${encodeURIComponent(`
   </bunium-webview>
 </div>
 </body>
-`)}`;
+`;
+const server = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  fetch: () =>
+    new Response(outerHtml, { headers: { "content-type": "text/html" } }),
+});
+const origin = server.url.origin;
 
 const win = new BuniumWindow({
-  url: outerHtml,
+  url: `${origin}/`,
+  trustedOrigins: [origin],
   width: 600,
   height: 400,
   title: "webview clip hit test",
@@ -123,4 +131,5 @@ console.log(
 );
 
 win.close();
+server.stop();
 app.shutdown();

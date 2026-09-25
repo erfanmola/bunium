@@ -486,10 +486,28 @@ BUNIUM_EXPORT void bunium_set_app_root(const char *root_dir_path) {
   g_bunium_scheme_root = root_dir_path;
 }
 
-BUNIUM_EXPORT void *bunium_create_view(const char *url, int width, int height,
-                                       int transparent) {
+// Native capability handshake for origin-bound renderer IPC. Kept separate
+// from the JS wrapper so a stale native platform package cannot claim support.
+BUNIUM_EXPORT int bunium_trusted_origins_api_version() { return 1; }
+
+static void *CreateView(const char *url, int width, int height,
+                        int transparent, const char *trusted_origins) {
   auto *view = new BuniumView();
-  view->client = new BuniumClient(width, height);
+  std::vector<std::string> origins;
+  if (trusted_origins && *trusted_origins) {
+    std::string rules(trusted_origins);
+    size_t start = 0;
+    while (start < rules.size()) {
+      size_t end = rules.find('\n', start);
+      origins.push_back(rules.substr(start, end == std::string::npos
+                                               ? std::string::npos
+                                               : end - start));
+      if (end == std::string::npos)
+        break;
+      start = end + 1;
+    }
+  }
+  view->client = new BuniumClient(width, height, origins);
 
   CefWindowInfo window_info;
   window_info.SetAsWindowless(kNullWindowHandle);
@@ -510,9 +528,28 @@ BUNIUM_EXPORT void *bunium_create_view(const char *url, int width, int height,
   if (BuniumVerbose())
     fprintf(stderr, "[startup-diag] t=%lld us stage=create_browser_call\n",
             (long long)MonotonicNowUs());
+  auto extra_info = CefDictionaryValue::Create();
+  std::string serialized_origins;
+  for (const auto &origin : origins) {
+    if (!serialized_origins.empty())
+      serialized_origins.push_back('\n');
+    serialized_origins += origin;
+  }
+  extra_info->SetString("bunium_trusted_origins", serialized_origins);
   CefBrowserHost::CreateBrowser(window_info, view->client, CefString(url),
-                                browser_settings, nullptr, nullptr);
+                                browser_settings, extra_info, nullptr);
   return view;
+}
+
+BUNIUM_EXPORT void *bunium_create_view(const char *url, int width, int height,
+                                       int transparent) {
+  return CreateView(url, width, height, transparent, "");
+}
+
+BUNIUM_EXPORT void *bunium_create_trusted_view(const char *url, int width,
+                                               int height, int transparent,
+                                               const char *trusted_origins) {
+  return CreateView(url, width, height, transparent, trusted_origins);
 }
 
 BUNIUM_EXPORT void bunium_navigate(void *handle, const char *url) {

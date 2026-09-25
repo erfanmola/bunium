@@ -33,9 +33,12 @@
 #include "include/cef_load_handler.h"
 #include "include/cef_parser.h"
 #include "include/cef_process_message.h"
+#include "include/cef_request.h"
+#include "include/cef_request_handler.h"
 #include "include/cef_render_handler.h"
 #include "include/cef_render_process_handler.h"
 #include "include/cef_scheme.h"
+#include "include/cef_values.h"
 #include "include/cef_v8.h"
 
 // Injected once per page (alongside the reportBounds/send/on bootstrap in
@@ -288,10 +291,13 @@ class BuniumClient : public CefClient,
                      public CefLifeSpanHandler,
                      public CefDisplayHandler,
                      public CefLoadHandler,
-                     public CefContextMenuHandler {
+                     public CefContextMenuHandler,
+                     public CefRequestHandler {
 public:
-  explicit BuniumClient(int width, int height)
-      : width_(width), height_(height) {}
+  explicit BuniumClient(int width, int height,
+                        std::vector<std::string> trusted_origins)
+      : width_(width), height_(height),
+        trusted_origins_(std::move(trusted_origins)) {}
 
   // CefClient
   CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
@@ -300,6 +306,29 @@ public:
   CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
   CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override {
     return this;
+  }
+  CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
+
+  // A same-origin child frame can reach objects on its parent window even
+  // when no bridge was injected into the child context. Deny navigations to
+  // a trusted origin in subframes so page code cannot borrow the top frame's
+  // V8 capability by calling parent.__bunium.send(). Third-party frames stay
+  // loadable and have no bridge; their cross-origin boundary protects the
+  // trusted top-frame object.
+  bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
+                      CefRefPtr<CefFrame> frame,
+                      CefRefPtr<CefRequest> request, bool user_gesture,
+                      bool is_redirect) override {
+    if (frame->IsMain())
+      return false;
+    CefURLParts parts;
+    if (!CefParseURL(request->GetURL(), parts))
+      return false;
+    std::string origin = CefString(&parts.origin).ToString();
+    if (!origin.empty() && origin.back() == '/')
+      origin.pop_back();
+    return std::find(trusted_origins_.begin(), trusted_origins_.end(), origin) !=
+           trusted_origins_.end();
   }
 
   // CefContextMenuHandler -- without an explicit handler, CEF falls back to
@@ -335,6 +364,7 @@ public:
   // CefLifeSpanHandler
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
     browser_ = browser;
+    browser_id_ = browser->GetIdentifier();
     if (BuniumVerbose()) {
       fprintf(stderr, "[after-created] id=%d\n", browser->GetIdentifier());
       fprintf(stderr, "[startup-diag] t=%lld us stage=after_created\n",
@@ -469,6 +499,8 @@ public:
                                 CefProcessId source_process,
                                 CefRefPtr<CefProcessMessage> message) override {
     const auto &name = message->GetName();
+    if (!IsAuthorizedFrame(browser, frame, source_process))
+      return false;
     if (name == kBoundsMessageName) {
       if (!tracked_sublayer_)
         return true;
@@ -527,6 +559,22 @@ public:
   }
 
 private:
+  bool IsAuthorizedFrame(CefRefPtr<CefBrowser> browser,
+                         CefRefPtr<CefFrame> frame,
+                         CefProcessId source_process) const {
+    if (source_process != PID_RENDERER || !browser || !frame ||
+        !frame->IsMain() || browser->GetIdentifier() != browser_id_)
+      return false;
+    CefURLParts parts;
+    if (!CefParseURL(frame->GetURL(), parts))
+      return false;
+    std::string origin = CefString(&parts.origin).ToString();
+    if (!origin.empty() && origin.back() == '/')
+      origin.pop_back();
+    return std::find(trusted_origins_.begin(), trusted_origins_.end(), origin) !=
+           trusted_origins_.end();
+  }
+
   int width_;
   int height_;
   CefRefPtr<CefBrowser> browser_;
@@ -538,6 +586,8 @@ private:
   bool first_paint_logged_ = false;
   MessageInbox inbox_;
   std::vector<Rect> drag_regions_;
+  int browser_id_ = -1;
+  std::vector<std::string> trusted_origins_;
 
   IMPLEMENT_REFCOUNTING(BuniumClient);
 };
@@ -768,6 +818,40 @@ public:
     return this;
   }
 
+  void OnBrowserCreated(CefRefPtr<CefBrowser> browser,
+                        CefRefPtr<CefDictionaryValue> extra_info) override {
+    std::vector<std::string> origins;
+    if (extra_info && extra_info->HasKey("bunium_trusted_origins")) {
+      std::string rules = extra_info->GetString("bunium_trusted_origins").ToString();
+      size_t start = 0;
+      while (start < rules.size()) {
+        size_t end = rules.find('\n', start);
+        std::string rule = rules.substr(start, end == std::string::npos
+                                                 ? std::string::npos
+                                                 : end - start);
+        CefURLParts parts;
+        if (CefParseURL(rule, parts) && parts.username.length == 0 &&
+            parts.password.length == 0 && parts.query.length == 0 &&
+            parts.fragment.length == 0 &&
+            (parts.path.length == 0 || CefString(&parts.path).ToString() == "/")) {
+          std::string origin = CefString(&parts.origin).ToString();
+          if (!origin.empty() && origin.back() == '/')
+            origin.pop_back();
+          if (rule == origin || rule == origin + "/")
+            origins.push_back(origin);
+        }
+        if (end == std::string::npos)
+          break;
+        start = end + 1;
+      }
+    }
+    trusted_origins_[browser->GetIdentifier()] = std::move(origins);
+  }
+
+  void OnBrowserDestroyed(CefRefPtr<CefBrowser> browser) override {
+    trusted_origins_.erase(browser->GetIdentifier());
+  }
+
   // Force the real Metal ANGLE backend instead of falling back to
   // SwiftShader (software Vulkan), which adds GPU-process overhead with
   // none of the speed benefit.
@@ -948,6 +1032,17 @@ public:
   void OnContextCreated(CefRefPtr<CefBrowser> browser,
                         CefRefPtr<CefFrame> frame,
                         CefRefPtr<CefV8Context> context) override {
+    auto trusted = trusted_origins_.find(browser->GetIdentifier());
+    CefURLParts parts;
+    if (!frame->IsMain() || trusted == trusted_origins_.end() ||
+        !CefParseURL(frame->GetURL(), parts))
+      return;
+    std::string origin = CefString(&parts.origin).ToString();
+    if (!origin.empty() && origin.back() == '/')
+      origin.pop_back();
+    if (std::find(trusted->second.begin(), trusted->second.end(), origin) ==
+        trusted->second.end())
+      return;
     if (BuniumVerbose()) {
       fprintf(stderr, "[context-created] url=%s\n",
               frame->GetURL().ToString().c_str());
@@ -1048,7 +1143,9 @@ public:
                                 CefRefPtr<CefFrame> frame,
                                 CefProcessId source_process,
                                 CefRefPtr<CefProcessMessage> message) override {
-    if (message->GetName() != kDispatchMessageName)
+    if (message->GetName() != kDispatchMessageName ||
+        source_process != PID_BROWSER || !frame->IsMain() ||
+        trusted_origins_.find(browser->GetIdentifier()) == trusted_origins_.end())
       return false;
     BuniumIpcDiagLog("renderer_dispatch_recv", "renderer");
 
@@ -1080,6 +1177,7 @@ public:
 
 private:
   std::map<std::string, CefRefPtr<CefV8Context>> contexts_;
+  std::map<int, std::vector<std::string>> trusted_origins_;
 
   IMPLEMENT_REFCOUNTING(BuniumApp);
 };

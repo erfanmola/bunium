@@ -11,10 +11,11 @@ name: Release
 # 2026 -- index.json URLs no longer resolve. Flat paths work instead:
 #   https://cef-builds.spotifycdn.com/cef_binary_<version>_macosarm64_minimal.tar.bz2
 #
-# Each platform job publishes its own staged platform package to npm on its
-# own native runner (real hardware for each OS, no cross-build/manual-publish
-# step needed); a final job publishes `bunium` + `create-bunium-app` once all
-# three platform packages are live. Requires an `NPM_TOKEN` repo secret (an
+# Each native runner builds and verifies its package first. Only after all
+# three platform jobs pass does the final job attach release assets and
+# publish platform packages, `bunium`, and `create-bunium-app`. Manual runs
+# build and verify candidate artifacts; publication is tag-push only. Requires an
+# `NPM_TOKEN` repo secret (an
 # npm automation token with publish rights on the `bunium`/`bunium-*`/
 # `create-bunium-app` packages) -- see docs/guide/publishing.md.
 on:
@@ -63,10 +64,20 @@ jobs:
               cmake -S vendor/cef-macosarm64 -B vendor/cef-macosarm64/build
               cmake --build vendor/cef-macosarm64/build --target libcef_dll_wrapper
 
-         - run: bun install
-
          - name: Resolve release version (strip leading v)
-           run: echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+           run: |
+              if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+                version="${GITHUB_REF_NAME#v}"
+              else
+                version="$(node -p 'require("./package.json").version')"
+              fi
+              echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+
+         - name: Validate release manifests
+           run: |
+              test "$RELEASE_VERSION" = "$(node -p 'require("./package.json").version')"
+              test "$RELEASE_VERSION" = "$(node -p 'require("./create-bunium-app/package.json").version')"
+              node -e 'const p=require("./package.json");for(const [n,v] of Object.entries(p.optionalDependencies))if(v!==process.env.RELEASE_VERSION)process.exitCode=1'
 
          - name: Build shim + subprocess
            run: bun run build:native:mac
@@ -75,22 +86,20 @@ jobs:
            run: bun run release:artifacts -- -v "$RELEASE_VERSION"
 
          - name: Verify installed-consumer path
-           # Real window + paint on the runner; PLATFORM-PACKAGE-SMOKE PASS on
-           # exit 0. Run after staging so it exercises the staged artifacts.
-           run: scripts/verify-platform-package.sh
-
-         - name: Attach archive to GitHub Release
-           uses: softprops/action-gh-release@v2
-           with:
-              files: |
-                 dist-release/bunium-darwin-arm64-${{ env.RELEASE_VERSION }}.tar.gz
-
-         - name: Publish bunium-darwin-arm64 to npm
+           # Requires paint plus trusted/untrusted origin and subframe checks
+           # against the staged native package.
            run: |
-              npm config set //registry.npmjs.org/:_authToken="${NPM_TOKEN}"
-              npm publish ./dist-release/bunium-darwin-arm64 --access public
-           env:
-              NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+              scripts/verify-platform-package.sh | tee verify.log
+              grep -q "TRUSTED_ORIGIN_VERIFY:PASS" verify.log
+
+         - name: Upload verified package
+           uses: actions/upload-artifact@v4
+           with:
+              name: bunium-darwin-arm64
+              path: |
+                 dist-release/bunium-darwin-arm64/
+                 dist-release/bunium-darwin-arm64-${{ env.RELEASE_VERSION }}.tar.gz
+              if-no-files-found: error
 
    linux-x64:
       runs-on: ubuntu-latest
@@ -117,10 +126,20 @@ jobs:
          - name: Fetch CEF distro (reproduces vendor/cef-linux64)
            run: bash docker/linux/fetch-cef.sh
 
-         - run: bun install
-
          - name: Resolve release version (strip leading v)
-           run: echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+           run: |
+              if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+                version="${GITHUB_REF_NAME#v}"
+              else
+                version="$(node -p 'require("./package.json").version')"
+              fi
+              echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+
+         - name: Validate release manifests
+           run: |
+              test "$RELEASE_VERSION" = "$(node -p 'require("./package.json").version')"
+              test "$RELEASE_VERSION" = "$(node -p 'require("./create-bunium-app/package.json").version')"
+              node -e 'const p=require("./package.json");for(const [n,v] of Object.entries(p.optionalDependencies))if(v!==process.env.RELEASE_VERSION)process.exitCode=1'
 
          - name: Build shim + subprocess
            run: bun run build:native:linux
@@ -133,20 +152,17 @@ jobs:
               Xvfb :99 -screen 0 1024x768x24 &
               sleep 1
               export DISPLAY=:99
-              scripts/verify-platform-package-linux.sh
+              scripts/verify-platform-package-linux.sh | tee verify.log
+              grep -q "TRUSTED_ORIGIN_VERIFY:PASS" verify.log
 
-         - name: Attach archive to GitHub Release
-           uses: softprops/action-gh-release@v2
+         - name: Upload verified package
+           uses: actions/upload-artifact@v4
            with:
-              files: |
+              name: bunium-linux-x64
+              path: |
+                 dist-release/bunium-linux-x64/
                  dist-release/bunium-linux-x64-${{ env.RELEASE_VERSION }}.tar.gz
-
-         - name: Publish bunium-linux-x64 to npm
-           run: |
-              npm config set //registry.npmjs.org/:_authToken="${NPM_TOKEN}"
-              npm publish ./dist-release/bunium-linux-x64 --access public
-           env:
-              NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+              if-no-files-found: error
 
    win32-x64:
       runs-on: windows-latest
@@ -180,13 +196,22 @@ jobs:
               rm -rf vendor/cef-windows-x64
               mv "$inner" vendor/cef-windows-x64
 
-         - name: bun install
-           shell: bash
-           run: bun install
-
          - name: Resolve release version (strip leading v)
            shell: bash
-           run: echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+           run: |
+              if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+                version="${GITHUB_REF_NAME#v}"
+              else
+                version="$(node -p 'require("./package.json").version')"
+              fi
+              echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+
+         - name: Validate release manifests
+           shell: bash
+           run: |
+              test "$RELEASE_VERSION" = "$(node -p 'require("./package.json").version')"
+              test "$RELEASE_VERSION" = "$(node -p 'require("./create-bunium-app/package.json").version')"
+              node -e 'const p=require("./package.json");for(const [n,v] of Object.entries(p.optionalDependencies))if(v!==process.env.RELEASE_VERSION)process.exitCode=1'
 
          - name: Build shim + subprocess
            shell: bash
@@ -198,21 +223,18 @@ jobs:
 
          - name: Verify installed-consumer path
            shell: bash
-           run: bash scripts/verify-platform-package-win.sh
-
-         - name: Attach archive to GitHub Release
-           uses: softprops/action-gh-release@v2
-           with:
-              files: |
-                 dist-release/bunium-win32-x64-${{ env.RELEASE_VERSION }}.tar.gz
-
-         - name: Publish bunium-win32-x64 to npm
-           shell: bash
            run: |
-              npm config set //registry.npmjs.org/:_authToken="${NPM_TOKEN}"
-              npm publish ./dist-release/bunium-win32-x64 --access public
-           env:
-              NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+              bash scripts/verify-platform-package-win.sh | tee verify.log
+              grep -q "TRUSTED_ORIGIN_VERIFY:PASS" verify.log
+
+         - name: Upload verified package
+           uses: actions/upload-artifact@v4
+           with:
+              name: bunium-win32-x64
+              path: |
+                 dist-release/bunium-win32-x64/
+                 dist-release/bunium-win32-x64-${{ env.RELEASE_VERSION }}.tar.gz
+              if-no-files-found: error
 
    publish-npm:
       needs: [darwin-arm64, linux-x64, win32-x64]
@@ -220,18 +242,56 @@ jobs:
       steps:
          - uses: actions/checkout@v4
 
-         - uses: oven-sh/setup-bun@v2
+         - name: Download all verified packages
+           uses: actions/download-artifact@v4
+           with:
+              pattern: bunium-*
+              path: dist-release
+              merge-multiple: true
+
+         - name: Verify downloaded release payload
+           run: |
+              if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+                version="${GITHUB_REF_NAME#v}"
+              else
+                version="$(node -p 'require("./package.json").version')"
+              fi
+              test "$(node -p 'require("./package.json").version')" = "$version"
+              test "$(node -p 'require("./create-bunium-app/package.json").version')" = "$version"
+              for package in bunium-darwin-arm64 bunium-linux-x64 bunium-win32-x64; do
+                test "$(node -p "require('./dist-release/$package/package.json').version")" = "$version"
+                test -f "dist-release/$package-$version.tar.gz"
+              done
+
+         - name: Attach verified archives to GitHub Release
+           if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+           uses: softprops/action-gh-release@v2
+           with:
+              files: dist-release/*.tar.gz
+
+         - name: Configure npm authentication
+           if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+           run: npm config set //registry.npmjs.org/:_authToken="${NPM_TOKEN}"
+           env:
+              NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+         - name: Publish native platform packages
+           if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+           run: |
+              npm publish ./dist-release/bunium-darwin-arm64 --access public
+              npm publish ./dist-release/bunium-linux-x64 --access public
+              npm publish ./dist-release/bunium-win32-x64 --access public
+           env:
+              NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
          - name: Publish bunium
-           run: |
-              npm config set //registry.npmjs.org/:_authToken="${NPM_TOKEN}"
-              npm publish . --access public
+           if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+           run: npm publish . --access public
            env:
               NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
          - name: Publish create-bunium-app
-           run: |
-              npm config set //registry.npmjs.org/:_authToken="${NPM_TOKEN}"
-              npm publish ./create-bunium-app --access public
+           if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+           run: npm publish ./create-bunium-app --access public
            env:
               NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -82,6 +82,7 @@ jobs:
           bash packaging/linux/package.sh \
             -a packaging/mac/fixture-app -n BuniumFixture -o dist-app \
             -b "$(command -v bun)" --verify 2>&1 | tee pack.log
+          grep -q "TRUSTED_ORIGIN_VERIFY:PASS" pack.log
 
       - name: Upload logs
         uses: actions/upload-artifact@v4

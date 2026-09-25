@@ -14,8 +14,14 @@ const lib = dlopen(paths.shim, {
   },
   bunium_do_message_loop_work: { args: [], returns: FFIType.void },
   bunium_pump_native_events: { args: [], returns: FFIType.void },
-  bunium_create_view: {
-    args: [FFIType.cstring, FFIType.i32, FFIType.i32, FFIType.i32],
+  bunium_create_trusted_view: {
+    args: [
+      FFIType.cstring,
+      FFIType.i32,
+      FFIType.i32,
+      FFIType.i32,
+      FFIType.cstring,
+    ],
     returns: FFIType.ptr,
   },
   bunium_create_native_window: {
@@ -84,15 +90,28 @@ function readSublayerFrame() {
 
 console.log("initial sublayer frame:", readSublayerFrame());
 
-const outerHtml = `data:text/html,${encodeURIComponent(`
+const outerHtml = `
 <script>
   // Simulates what a real <bunium-webview> element's runtime would do on
   // scroll/resize/transform -- for this test just fire once with fixed
   // coordinates rather than a real getBoundingClientRect() rAF loop.
   window.__bunium.reportBounds(200, 120, 300, 180);
 </script>
-`)}`;
-const outerView = lib.symbols.bunium_create_view(cstr(outerHtml), 600, 400, 0);
+`;
+const server = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  fetch: () =>
+    new Response(outerHtml, { headers: { "content-type": "text/html" } }),
+});
+const origin = server.url.origin;
+const outerView = lib.symbols.bunium_create_trusted_view(
+  cstr(`${origin}/`),
+  600,
+  400,
+  0,
+  cstr(origin),
+);
 lib.symbols.bunium_attach_window(outerView, win);
 lib.symbols.bunium_view_track_sublayer(outerView, sublayer);
 
@@ -117,3 +136,4 @@ lib.symbols.bunium_close_view(outerView);
 lib.symbols.bunium_close_native_sublayer(sublayer);
 lib.symbols.bunium_close_native_window(win);
 lib.symbols.bunium_shutdown();
+server.stop();

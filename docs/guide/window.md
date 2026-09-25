@@ -16,6 +16,7 @@ const win = new BuniumWindow({ url: "bunium://app/" });
 | Option        | Type      | Default | Notes                                                                  |
 | ------------- | --------- | ------- | ---------------------------------------------------------------------- |
 | `url`         | `string`  | —       | Initial URL.                                                           |
+| `trustedOrigins` | `string[]` | `[]` | Exact origins allowed to receive `window.__bunium`. Renderer IPC is disabled for every origin unless explicitly trusted. |
 | `width`       | `number`  | `800`   | Logical (CSS px) content width.                                        |
 | `height`      | `number`  | `600`   | Logical content height.                                                |
 | `title`       | `string`  | `bunium`| Window title.                                                          |
@@ -26,6 +27,12 @@ const win = new BuniumWindow({ url: "bunium://app/" });
 | `maxWidth`/`maxHeight` | `number` | unset | Maximum content size for user resize.                        |
 | `titleBarStyle` | `"default" \| "hidden" \| "hiddenInset"` | `"default"` | macOS only. `"hidden"` extends the page under the title bar while keeping the traffic-light buttons in place; `"hiddenInset"` also nudges them to a standard inset position. Ignored on Windows/Linux and on `frame: false` windows. |
 | `trafficLightPosition` | `{ x: number; y: number }` | unset | macOS only. Explicit traffic-light position (logical px from the title bar's top-left corner). Only applies with `titleBarStyle: "hidden"`/`"hiddenInset"`. |
+
+`trustedOrigins` entries must be exact origins such as `https://app.example` or
+`bunium://app`. Paths, credentials, query strings, and fragments are rejected.
+The native runtime validates the top-level frame origin for bridge injection
+and IPC delivery. Check `trustedOriginsApiVersion === 1` when your application
+requires this enforcement.
 
 ## Methods
 

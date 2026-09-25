@@ -21,7 +21,7 @@ const innerPage = `data:text/html,${encodeURIComponent(
   '<body style="margin:0;background:blue"></body>',
 )}`;
 
-const outerHtml = `data:text/html,${encodeURIComponent(`
+const outerHtml = `
 <body style="margin:0">
   <bunium-webview id="wv" src="${innerPage}"
     style="position:absolute;left:50px;top:40px;width:200px;height:150px;">
@@ -36,10 +36,18 @@ const outerHtml = `data:text/html,${encodeURIComponent(`
     });
   </script>
 </body>
-`)}`;
+`;
+const server = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  fetch: () =>
+    new Response(outerHtml, { headers: { "content-type": "text/html" } }),
+});
+const origin = server.url.origin;
 
 const win = new BuniumWindow({
-  url: outerHtml,
+  url: `${origin}/`,
+  trustedOrigins: [origin],
   width: 600,
   height: 400,
   title: "webview element test",
@@ -129,4 +137,5 @@ console.log(
 );
 
 win.close();
+server.stop();
 app.shutdown();

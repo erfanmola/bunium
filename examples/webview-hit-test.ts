@@ -22,7 +22,7 @@ function clickablePage(bg: string) {
 `)}`;
 }
 
-const outerHtml = `data:text/html,${encodeURIComponent(`
+const outerHtml = `
 <body style="margin:0">
 <div id="box" style="width:100%;height:100%;background:red"
      onclick="document.getElementById('box').style.background='lime'"></div>
@@ -30,10 +30,18 @@ const outerHtml = `data:text/html,${encodeURIComponent(`
   style="position:absolute;left:100px;top:100px;width:250px;height:150px;">
 </bunium-webview>
 </body>
-`)}`;
+`;
+const server = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  fetch: () =>
+    new Response(outerHtml, { headers: { "content-type": "text/html" } }),
+});
+const origin = server.url.origin;
 
 const win = new BuniumWindow({
-  url: outerHtml,
+  url: `${origin}/`,
+  trustedOrigins: [origin],
   width: 600,
   height: 400,
   title: "webview hit test",
@@ -109,4 +117,5 @@ const outerTurnedGreen =
 console.log("second click routed to OUTER page:", outerTurnedGreen);
 
 win.close();
+server.stop();
 app.shutdown();

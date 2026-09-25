@@ -19,8 +19,14 @@ const lib = dlopen(paths.shim, {
   },
   bunium_do_message_loop_work: { args: [], returns: FFIType.void },
   bunium_pump_native_events: { args: [], returns: FFIType.void },
-  bunium_create_view: {
-    args: [FFIType.cstring, FFIType.i32, FFIType.i32, FFIType.i32],
+  bunium_create_trusted_view: {
+    args: [
+      FFIType.cstring,
+      FFIType.i32,
+      FFIType.i32,
+      FFIType.i32,
+      FFIType.cstring,
+    ],
     returns: FFIType.ptr,
   },
   bunium_create_native_window: {
@@ -72,7 +78,7 @@ const sublayer = lib.symbols.bunium_create_native_sublayer(win, 0, 50, 50, 50);
 
 const SPEED_PX_PER_MS = 0.1; // 100px/sec -- crosses ~200px over the 2s test window
 
-const outerHtml = `data:text/html,${encodeURIComponent(`
+const outerHtml = `
 <body style="margin:0">
 <div id="box" style="position:absolute;top:50px;left:0;width:50px;height:50px;background:red"></div>
 <script>
@@ -88,9 +94,22 @@ const outerHtml = `data:text/html,${encodeURIComponent(`
   requestAnimationFrame(tick);
 </script>
 </body>
-`)}`;
+`;
+const server = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  fetch: () =>
+    new Response(outerHtml, { headers: { "content-type": "text/html" } }),
+});
+const origin = server.url.origin;
 
-const outerView = lib.symbols.bunium_create_view(cstr(outerHtml), 600, 400, 0);
+const outerView = lib.symbols.bunium_create_trusted_view(
+  cstr(`${origin}/`),
+  600,
+  400,
+  0,
+  cstr(origin),
+);
 lib.symbols.bunium_attach_window(outerView, win);
 lib.symbols.bunium_view_track_sublayer(outerView, sublayer);
 
@@ -190,3 +209,4 @@ lib.symbols.bunium_close_view(outerView);
 lib.symbols.bunium_close_native_sublayer(sublayer);
 lib.symbols.bunium_close_native_window(win);
 lib.symbols.bunium_shutdown();
+server.stop();

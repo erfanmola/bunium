@@ -44,6 +44,7 @@ ln -sfn "$PKG_DIR" "$CONSUMER/node_modules/$PKG_NAME"
 # Script run relative to the consumer so import.meta.resolve of
 # "bunium-linux-<arch>" walks the consumer's own node_modules.
 cp "$SCRIPT_DIR/verify-platform-package-main.ts" "$CONSUMER/main.ts"
+cp "$SCRIPT_DIR/trusted-origin-smoke.ts" "$CONSUMER/trusted-origin-smoke.ts"
 
 cd "$CONSUMER"
 BUN_BIN="$(command -v bun || echo "$HOME/.bun/bin/bun")"

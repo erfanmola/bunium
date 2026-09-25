@@ -1,4 +1,5 @@
 import { app, BuniumWindow } from "bunium";
+import { verifyTrustedOriginBridge } from "./trusted-origin-smoke";
 
 // End-to-end smoke test for an INSTALLED bunium consumer: this app is run
 // from dist-release/_consumer/, where node_modules/bunium is a materialized
@@ -22,7 +23,14 @@ const b = shot.data[idx]!;
 const g = shot.data[idx + 1]!;
 const r = shot.data[idx + 2]!;
 console.log("center pixel BGR:", b, g, r);
-const passed = r < 20 && g > 235 && b < 20;
+const paintPassed = r < 20 && g > 235 && b < 20;
+const trustedOriginPassed = paintPassed && (await verifyTrustedOriginBridge());
+console.log(
+  trustedOriginPassed
+    ? "TRUSTED_ORIGIN_VERIFY:PASS"
+    : "TRUSTED_ORIGIN_VERIFY:FAIL",
+);
+const passed = paintPassed && trustedOriginPassed;
 console.log(
   passed ? "PLATFORM-PACKAGE-SMOKE PASS" : "PLATFORM-PACKAGE-SMOKE FAIL",
 );

@@ -15,8 +15,14 @@ const lib = dlopen(paths.shim, {
   },
   bunium_do_message_loop_work: { args: [], returns: FFIType.void },
   bunium_pump_native_events: { args: [], returns: FFIType.void },
-  bunium_create_view: {
-    args: [FFIType.cstring, FFIType.i32, FFIType.i32, FFIType.i32],
+  bunium_create_trusted_view: {
+    args: [
+      FFIType.cstring,
+      FFIType.i32,
+      FFIType.i32,
+      FFIType.i32,
+      FFIType.cstring,
+    ],
     returns: FFIType.ptr,
   },
   bunium_create_native_window: {
@@ -62,13 +68,25 @@ const win = lib.symbols.bunium_create_native_window(
 );
 
 // a titlebar-like draggable strip at the top, 400x40
-const html = `data:text/html,${encodeURIComponent(`
+const html = `
 <body style="margin:0">
 <div style="width:400px;height:40px;background:gray;-webkit-app-region:drag"></div>
 <div style="width:400px;height:260px;background:white"></div>
 </body>
-`)}`;
-const view = lib.symbols.bunium_create_view(cstr(html), 400, 300, 0);
+`;
+const server = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  fetch: () => new Response(html, { headers: { "content-type": "text/html" } }),
+});
+const origin = server.url.origin;
+const view = lib.symbols.bunium_create_trusted_view(
+  cstr(`${origin}/`),
+  400,
+  300,
+  0,
+  cstr(origin),
+);
 lib.symbols.bunium_attach_window(view, win);
 
 const start = performance.now();
@@ -106,3 +124,4 @@ console.log(
 lib.symbols.bunium_close_view(view);
 lib.symbols.bunium_close_native_window(win);
 lib.symbols.bunium_shutdown();
+server.stop();

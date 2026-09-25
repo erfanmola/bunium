@@ -61,8 +61,6 @@ jobs:
           cmake -S vendor/cef-macosarm64 -B vendor/cef-macosarm64/build
           cmake --build vendor/cef-macosarm64/build --target libcef_dll_wrapper
 
-      - run: bun install
-
       - name: Build native stack
         run: bun run build:native:mac
 
@@ -132,6 +130,7 @@ jobs:
           pkill -KILL -f "BuniumFixture" 2>/dev/null || true
 
           cat pack-verify.log
+          grep -q "TRUSTED_ORIGIN_VERIFY:PASS" pack-verify.log
           grep -q "PACKAGED_APP_VERIFY:PASS" pack-verify.log
 
       - name: Upload logs

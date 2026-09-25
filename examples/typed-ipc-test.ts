@@ -5,16 +5,23 @@ interface AppMessages {
   ping: { ts: number };
 }
 
-const html = `data:text/html,${encodeURIComponent(`
+const html = `
 <script>
   window.__bunium.send("user-clicked", JSON.stringify({ id: "btn-1", count: 3 }));
   window.__bunium.send("ping", JSON.stringify({ ts: 42 }));
   window.__bunium.send("user-clicked", JSON.stringify({ id: "btn-2", count: 7 }));
 </script>
-`)}`;
+`;
+const server = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  fetch: () => new Response(html, { headers: { "content-type": "text/html" } }),
+});
+const origin = server.url.origin;
 
 const win = new BuniumWindow<AppMessages>({
-  url: html,
+  url: `${origin}/`,
+  trustedOrigins: [origin],
   width: 300,
   height: 200,
 });
@@ -45,4 +52,5 @@ console.log(
 console.log("ping message arrived with correct payload:", pingReceived);
 
 win.close();
+server.stop();
 app.shutdown();
