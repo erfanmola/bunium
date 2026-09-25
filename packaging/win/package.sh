@@ -190,6 +190,7 @@ fi
 resource_app="$PACKAGE/app"
 tar -C "$APP_DIR" --exclude node_modules --exclude .git -cf - . |
   (cd "$resource_app" && tar -xf -)
+cp "$BUNIUM_REPO/scripts/trusted-origin-smoke.ts" "$resource_app/bunium/trusted-origin-smoke.ts"
 mkdir -p "$resource_app/node_modules/bunium"
 cp -R "$BUNIUM_REPO/src/." "$resource_app/node_modules/bunium/src/"
 cp "$BUNIUM_REPO/package.json" "$resource_app/node_modules/bunium/package.json"

@@ -31,8 +31,9 @@ const win = new BuniumWindow({ url: "bunium://app/" });
 `trustedOrigins` entries must be exact origins such as `https://app.example` or
 `bunium://app`. Paths, credentials, query strings, and fragments are rejected.
 The native runtime validates the top-level frame origin for bridge injection
-and IPC delivery. Check `trustedOriginsApiVersion === 1` when your application
-requires this enforcement.
+and IPC delivery. `trustedOriginsApiVersion` reports the capability version of
+the loaded native shim; use a matching native package when this enforcement is
+required.
 
 ## Methods
 

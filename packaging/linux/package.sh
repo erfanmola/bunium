@@ -178,6 +178,7 @@ mkdir -p "$resource_app"
 # cp -a (not rsync -- not guaranteed present) with a manual node_modules/.git
 # exclude via tar piping, which cp has no native equivalent for.
 (cd "$APP_DIR" && tar cf - --exclude=node_modules --exclude=.git .) | (cd "$resource_app" && tar xf -)
+cp "$BUNIUM_REPO/scripts/trusted-origin-smoke.ts" "$resource_app/bunium/trusted-origin-smoke.ts"
 mkdir -p "$resource_app/node_modules/bunium"
 (cd "$BUNIUM_REPO/src" && tar cf - .) | (cd "$resource_app/node_modules/bunium" && mkdir -p src && cd src && tar xf -)
 cp "$BUNIUM_REPO/package.json" "$resource_app/node_modules/bunium/package.json"

@@ -11,7 +11,7 @@ surface of the `bunium` package.
 | `BuniumWindow`        | `new BuniumWindow<M>(options)`. See [Window](/guide/window).                                                                           |
 | `BuniumWindowOptions` | Constructor options type.                                                                                                              |
 | `BuniumMessageMap`    | `Record<string, any>` base; override with your own interface for typed IPC. See [Typed IPC](/guide/ipc).                               |
-| `trustedOriginsApiVersion` | Native capability version for origin-bound renderer IPC. Check for `1` before relying on the bridge. |
+| `trustedOriginsApiVersion` | Native capability version for origin-bound renderer IPC. The loaded shim must export this capability. |
 
 ## System
 
