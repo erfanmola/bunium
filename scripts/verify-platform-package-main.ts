@@ -17,16 +17,26 @@ const win = new BuniumWindow({
   height: 240,
   title: "platform package smoke",
 });
-await Bun.sleep(600);
-
-const shot = win.captureScreenshot();
-const idx =
-  (Math.floor(shot.height / 2) * shot.width + Math.floor(shot.width / 2)) * 4;
-const b = shot.data[idx]!;
-const g = shot.data[idx + 1]!;
-const r = shot.data[idx + 2]!;
-console.log("center pixel BGR:", b, g, r);
-const paintPassed = r >= 40 && r < 60 && g > 190 && b < 60;
+let paintPassed = false;
+const paintDeadline = Date.now() + 8000;
+let centerPixel = "unavailable";
+while (Date.now() < paintDeadline && !paintPassed) {
+  if (win.frameCount > 0) {
+    const shot = win.captureScreenshot();
+    const idx =
+      (Math.floor(shot.height / 2) * shot.width + Math.floor(shot.width / 2)) *
+      4;
+    if (shot.width > 0 && shot.height > 0 && shot.data.length >= idx + 3) {
+      const b = shot.data[idx]!;
+      const g = shot.data[idx + 1]!;
+      const r = shot.data[idx + 2]!;
+      centerPixel = `${b} ${g} ${r}`;
+      paintPassed = r >= 40 && r < 60 && g > 190 && b < 60;
+    }
+  }
+  if (!paintPassed) await Bun.sleep(50);
+}
+console.log("center pixel BGR:", centerPixel);
 const trustedOriginPassed = paintPassed && (await verifyTrustedOriginBridge());
 console.log(
   trustedOriginPassed
