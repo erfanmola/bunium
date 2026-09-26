@@ -11,11 +11,10 @@ name: Release
 # 2026 -- index.json URLs no longer resolve. Flat paths work instead:
 #   https://cef-builds.spotifycdn.com/cef_binary_<version>_macosarm64_minimal.tar.bz2
 #
-# Each native runner builds and verifies its package first. Only after all
-# three platform jobs pass does the final job attach release assets and
-# publish platform packages, `bunium`, and `create-bunium-app`. Manual runs
-# build and verify candidate artifacts; publication is tag-push only. Requires an
-# `NPM_TOKEN` repo secret (an
+# Each native runner builds and verifies its package first. A manual run can
+# explicitly publish only those verified platform packages; after a portable
+# lockfile is generated and committed, a tag run publishes the JS packages and
+# attaches the release assets. Requires an `NPM_TOKEN` repo secret (an
 # npm automation token with publish rights on the `bunium`/`bunium-*`/
 # `create-bunium-app` packages) -- see docs/guide/publishing.md.
 on:
