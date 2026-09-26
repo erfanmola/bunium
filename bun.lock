@@ -10,9 +10,9 @@
         "typescript": "^7.0.2",
       },
       "optionalDependencies": {
-        "bunium-darwin-arm64": "0.0.6",
-        "bunium-linux-x64": "0.0.6",
-        "bunium-win32-x64": "0.0.6",
+        "bunium-darwin-arm64": "0.0.7",
+        "bunium-linux-x64": "0.0.7",
+        "bunium-win32-x64": "0.0.7",
       },
     },
   },
@@ -79,11 +79,11 @@
 
     "bun-types": ["bun-types@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ=="],
 
-    "bunium-darwin-arm64": ["bunium-darwin-arm64@0.0.6", "", { "os": "darwin", "cpu": "arm64" }, "sha512-m0R+qxSFUeTuxt+L+Z43enhiP7JBHex2HLH7AGN5CXpWC+ehd0su2g2L1exojtzXBCiY2W1habFaRbxEiBDU1w=="],
+    "bunium-darwin-arm64": ["bunium-darwin-arm64@0.0.7", "", { "os": "darwin", "cpu": "arm64" }, "sha512-w+Q5poLQizi6YSVnNlYFt3BlgGDHAFeqBEtWKeGiIQuhKYVfUL3hk4LgOf6cArS2Jn+ZEE2JNRjSta8waVP6vQ=="],
 
-    "bunium-linux-x64": ["bunium-linux-x64@0.0.6", "", { "os": "linux", "cpu": "x64" }, "sha512-9ZF+o9bFQMB2CNyKDYOmqRvqUlAT7wVuGOX1WrTnoEGZpbbK5wnZa+M8WgsnVY+susiteyLzqj/cUbyP1d6Ehg=="],
+    "bunium-linux-x64": ["bunium-linux-x64@0.0.7", "", { "os": "linux", "cpu": "x64" }, "sha512-CRVJqX7JQjKs/k1bJc0tRieJjl7K4/i7uxanhLX47/JVN70dHYQ904uIO1nJhEwy6UjqDb0wNXBGMlUxz5soKA=="],
 
-    "bunium-win32-x64": ["bunium-win32-x64@0.0.6", "", { "os": "win32", "cpu": "x64" }, "sha512-u7N1mw6bedS2yN4GikINddDNod2VGlgVAKQPk8Pm649NYFT0/LY46mGLcyyHLamW7S/fxjyEwcf9+T3md8rkOg=="],
+    "bunium-win32-x64": ["bunium-win32-x64@0.0.7", "", { "os": "win32", "cpu": "x64" }, "sha512-7uzgp8cCRuY0ctg0Wsp1c+2FWxWYKwUGOh/gWlbFe2ZTMCp9eisraKxfDk6RnwbUQhkLFXiw2CPXjXdTeex88w=="],
 
     "typescript": ["typescript@7.0.2", "", { "optionalDependencies": { "@typescript/typescript-aix-ppc64": "7.0.2", "@typescript/typescript-darwin-arm64": "7.0.2", "@typescript/typescript-darwin-x64": "7.0.2", "@typescript/typescript-freebsd-arm64": "7.0.2", "@typescript/typescript-freebsd-x64": "7.0.2", "@typescript/typescript-linux-arm": "7.0.2", "@typescript/typescript-linux-arm64": "7.0.2", "@typescript/typescript-linux-loong64": "7.0.2", "@typescript/typescript-linux-mips64el": "7.0.2", "@typescript/typescript-linux-ppc64": "7.0.2", "@typescript/typescript-linux-riscv64": "7.0.2", "@typescript/typescript-linux-s390x": "7.0.2", "@typescript/typescript-linux-x64": "7.0.2", "@typescript/typescript-netbsd-arm64": "7.0.2", "@typescript/typescript-netbsd-x64": "7.0.2", "@typescript/typescript-openbsd-arm64": "7.0.2", "@typescript/typescript-openbsd-x64": "7.0.2", "@typescript/typescript-sunos-x64": "7.0.2", "@typescript/typescript-win32-arm64": "7.0.2", "@typescript/typescript-win32-x64": "7.0.2" }, "bin": { "tsc": "bin/tsc" } }, "sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA=="],
 
