@@ -122,13 +122,22 @@ upload.
 
 ## Publishing a release
 
-Tag `v<version>` (matching `package.json`'s version on all packages) and
-push it — `release.yml` does the rest: each platform job builds its native
-artifacts on its own OS-native runner, stages the platform package, verifies
-the installed-consumer path, attaches the archive to a GitHub Release, then
-publishes that platform package to npm. A final job waits on all three and
-publishes `bunium` + `create-bunium-app` once every platform package they
-depend on (via `optionalDependencies`, pinned to the same version) is live.
+For a new version, first run `release.yml` manually with
+`publish_platforms=false`. This builds and verifies all three native packages
+without publishing. After reviewing that run, repeat it with
+`publish_platforms=true` to publish only the native packages. That step is
+safe to retry: an existing version is skipped only when its registry integrity
+matches the verified package archive.
+
+Once the platform packages are public, regenerate `bun.lock` against the public
+npm registry, confirm the frozen install succeeds, commit the lock on the
+release branch, and rerun CI. This ordering matters because the main package's
+lock must resolve the newly published platform package versions. Then tag the
+verified lock-bearing commit as `v<version>` and push it. The tag run publishes
+`bunium` and `create-bunium-app` with the same integrity-aware retry behavior;
+only after both succeed does it create/update the GitHub Release and attach the
+verified platform archives. Never create or move the version tag before the
+lock-bearing commit is validated.
 
 Requires an `NPM_TOKEN` repository secret — an npm
 [automation token](https://docs.npmjs.com/creating-and-viewing-access-tokens)

@@ -22,9 +22,15 @@ on:
    push:
       tags: ["v*"]
    workflow_dispatch:
+      inputs:
+         publish_platforms:
+            description: Publish verified native packages only; run after all native gates pass
+            type: boolean
+            required: true
+            default: false
 
 permissions:
-   contents: write
+   contents: read
 
 env:
    # Must match the vendored distro (vendor/cef-macosarm64). Bump both when
@@ -245,8 +251,19 @@ jobs:
    publish-npm:
       needs: [darwin-arm64, linux-x64, win32-x64]
       runs-on: ubuntu-latest
+      permissions:
+         contents: read
       steps:
          - uses: actions/checkout@v4
+
+         - name: Resolve release version
+           run: |
+              if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+                version="${GITHUB_REF_NAME#v}"
+              else
+                version="$(node -p 'require("./package.json").version')"
+              fi
+              echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
 
          - name: Download all verified packages
            uses: actions/download-artifact@v4
@@ -269,35 +286,55 @@ jobs:
                 test -f "dist-release/$package-$version.tar.gz"
               done
 
-         - name: Attach verified archives to GitHub Release
-           if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-           uses: softprops/action-gh-release@v2
-           with:
-              files: dist-release/*.tar.gz
-
          - name: Configure npm authentication
-           if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+           if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.publish_platforms)
            run: npm config set //registry.npmjs.org/:_authToken="${NPM_TOKEN}"
            env:
               NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
          - name: Publish native platform packages
-           if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+           if: github.event_name == 'workflow_dispatch' && inputs.publish_platforms
            run: |
-              npm publish ./dist-release/bunium-darwin-arm64 --access public
-              npm publish ./dist-release/bunium-linux-x64 --access public
-              npm publish ./dist-release/bunium-win32-x64 --access public
+              for package in bunium-darwin-arm64 bunium-linux-x64 bunium-win32-x64; do
+                scripts/publish-npm-idempotent.sh "./dist-release/$package" "$package" "$RELEASE_VERSION"
+              done
            env:
               NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+         - name: Verify native packages are already published
+           if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+           run: |
+              for package in bunium-darwin-arm64 bunium-linux-x64 bunium-win32-x64; do
+                published_version="$(npm view "$package@$RELEASE_VERSION" version)"
+                test "$published_version" = "$RELEASE_VERSION"
+              done
+
          - name: Publish bunium
            if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-           run: npm publish . --access public
+           run: scripts/publish-npm-idempotent.sh . bunium "$RELEASE_VERSION"
            env:
               NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
          - name: Publish create-bunium-app
            if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-           run: npm publish ./create-bunium-app --access public
+           run: scripts/publish-npm-idempotent.sh ./create-bunium-app create-bunium-app "$RELEASE_VERSION"
            env:
               NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+   github-release:
+      if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+      needs: [publish-npm]
+      runs-on: ubuntu-latest
+      permissions:
+         contents: write
+      steps:
+         - uses: actions/download-artifact@v4
+           with:
+              pattern: bunium-*
+              path: dist-release
+              merge-multiple: true
+
+         - name: Attach verified archives to GitHub Release
+           uses: softprops/action-gh-release@v2
+           with:
+              files: dist-release/*.tar.gz
