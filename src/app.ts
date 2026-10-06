@@ -123,15 +123,9 @@ class BuniumApp {
     lib.symbols.bunium_set_wake_socket_path(cstr(path));
   }
 
-  // Guards against forwarding a spurious OS-level resize as if it were
-  // real user intent. Observed in this dev environment: a freshly created,
-  // resizable+titled NSWindow can get resized by something outside bunium
-  // (external window manager/Stage Manager-style tiling, confirmed via a
-  // bare Cocoa window with zero CEF involvement -- not a bunium bug, but
-  // bunium still needs to not blindly propagate it) roughly 150-250ms
-  // after creation, with no resize call from us. A real user can't resize
-  // a window they just saw appear that fast, so ignore native-resize
-  // reports in this window and just resync lastSizes without forwarding.
+  // Defer startup resize propagation while the window manager settles.
+  // Keep the last delivered size until propagation so an early resize is
+  // synchronized once settled even if the native size stops changing.
   private static readonly RESIZE_SETTLE_MS = 1000;
   private windowCreatedAt = new Map<TrackedWindow, number>();
 
@@ -193,12 +187,12 @@ class BuniumApp {
       const width = this.widthBuf[0]!;
       const height = this.heightBuf[0]!;
       const last = this.lastSizes.get(win);
-      if (!last || last.width !== width || last.height !== height) {
+      const createdAt = this.windowCreatedAt.get(win) ?? 0;
+      const settled =
+        performance.now() - createdAt >= BuniumApp.RESIZE_SETTLE_MS;
+      if (settled && (!last || last.width !== width || last.height !== height)) {
         this.lastSizes.set(win, { width, height });
-        const createdAt = this.windowCreatedAt.get(win) ?? 0;
-        const settled =
-          performance.now() - createdAt >= BuniumApp.RESIZE_SETTLE_MS;
-        if (last && settled) win.onNativeResize(width, height);
+        win.onNativeResize(width, height);
       }
 
       win.pollMessages();

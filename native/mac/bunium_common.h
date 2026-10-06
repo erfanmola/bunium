@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -32,7 +33,12 @@
 #include "include/cef_life_span_handler.h"
 #include "include/cef_load_handler.h"
 #include "include/cef_parser.h"
+#include "include/cef_permission_handler.h"
 #include "include/cef_process_message.h"
+#include "include/cef_request.h"
+#include "include/cef_request_handler.h"
+#include "include/cef_task.h"
+#include "include/cef_values.h"
 #include "include/cef_render_handler.h"
 #include "include/cef_render_process_handler.h"
 #include "include/cef_scheme.h"
@@ -225,6 +231,23 @@ inline constexpr const char *kSendMessageName = "bunium-send";
 // (see the bootstrap script injected in BuniumApp::OnContextCreated).
 inline constexpr const char *kDispatchMessageName = "bunium-dispatch";
 
+// Guest (untrusted Mini App) channel. A guest view never gets __bunium; it
+// gets only a host-supplied document-start bridge script whose single native
+// capability is a closure-captured post(string) function. Each guest
+// document gets a renderer-generated nonce; the browser maps the current
+// nonce to a monotonically increasing generation so messages from, and
+// replies to, a previous document are dropped instead of misrouted.
+inline constexpr const char *kGuestContextMessageName = "bunium-guest-context";
+inline constexpr const char *kGuestPostMessageName = "bunium-guest-post";
+inline constexpr const char *kGuestDeliverMessageName = "bunium-guest-deliver";
+inline constexpr const char *kGuestEventName = "__bunium_guest_event";
+inline constexpr size_t kGuestMaxMessageBytes = 1024 * 1024;
+inline constexpr size_t kGuestMaxBridgeBytes = 256 * 1024;
+
+// Live-object counters so leak tests can prove create/dispose cycles return
+// to baseline (see bunium_debug_live_counts in bunium_shim.cpp).
+inline std::atomic<int> g_live_clients{0};
+
 // Thread-safe inbox for generic named messages (see kSendMessageName).
 // Written on CEF's UI thread inside OnProcessMessageReceived, drained from
 // JS's pump loop via bunium_poll_message -- same producer/consumer pattern
@@ -283,15 +306,119 @@ static void BuniumIpcDiagLog(const char *stage, const char *process_type) {
           (process_type && *process_type) ? process_type : "browser");
 }
 
+// Closes a browser on a later UI-thread task (see OnAfterCreated).
+class CloseBrowserTask : public CefTask {
+public:
+  explicit CloseBrowserTask(CefRefPtr<CefBrowser> browser)
+      : browser_(std::move(browser)) {}
+  void Execute() override { browser_->GetHost()->CloseBrowser(true); }
+
+private:
+  CefRefPtr<CefBrowser> browser_;
+  IMPLEMENT_REFCOUNTING(CloseBrowserTask);
+};
+
+class ReloadBrowserTask : public CefTask {
+public:
+  ReloadBrowserTask(CefRefPtr<CefBrowser> browser, bool ignore_cache)
+      : browser_(std::move(browser)), ignore_cache_(ignore_cache) {}
+  void Execute() override {
+    if (!browser_ || !browser_->IsValid())
+      return;
+    if (ignore_cache_)
+      browser_->ReloadIgnoreCache();
+    else
+      browser_->Reload();
+  }
+
+private:
+  CefRefPtr<CefBrowser> browser_;
+  bool ignore_cache_;
+  IMPLEMENT_REFCOUNTING(ReloadBrowserTask);
+};
+
 class BuniumClient : public CefClient,
                      public CefRenderHandler,
                      public CefLifeSpanHandler,
                      public CefDisplayHandler,
                      public CefLoadHandler,
-                     public CefContextMenuHandler {
+                     public CefContextMenuHandler,
+                     public CefRequestHandler,
+                     public CefPermissionHandler {
 public:
-  explicit BuniumClient(int width, int height)
-      : width_(width), height_(height) {}
+  explicit BuniumClient(int width, int height,
+                        std::vector<std::string> trusted_origins)
+      : width_(width), height_(height),
+        trusted_origins_(std::move(trusted_origins)) {
+    g_live_clients.fetch_add(1, std::memory_order_relaxed);
+  }
+  ~BuniumClient() override {
+    g_live_clients.fetch_sub(1, std::memory_order_relaxed);
+  }
+
+  // Marks this view as an untrusted guest: guest channel messages are
+  // accepted from its main frame, and lifecycle events are queued for the
+  // host (see kGuestEventName).
+  void EnableGuest() { guest_ = true; }
+  bool is_guest() const { return guest_; }
+  void SetMockGeolocation(bool clear, double latitude, double longitude,
+                          double accuracy) {
+    {
+      std::lock_guard<std::mutex> lock(guest_geolocation_mtx_);
+      guest_geolocation_configured_ = true;
+      guest_mock_geolocation_.store(!clear, std::memory_order_relaxed);
+      guest_latitude_ = latitude;
+      guest_longitude_ = longitude;
+      guest_accuracy_ = accuracy;
+    }
+  }
+  void ApplyMockGeolocation(CefRefPtr<CefBrowser> browser) {
+    if (!guest_ || !browser || !browser->IsValid())
+      return;
+    bool configured = false;
+    bool active = false;
+    double latitude = 0;
+    double longitude = 0;
+    double accuracy = 0;
+    {
+      std::lock_guard<std::mutex> lock(guest_geolocation_mtx_);
+      configured = guest_geolocation_configured_;
+      active = guest_mock_geolocation_.load(std::memory_order_relaxed);
+      latitude = guest_latitude_;
+      longitude = guest_longitude_;
+      accuracy = guest_accuracy_;
+    }
+    if (!configured)
+      return;
+    auto host = browser->GetHost();
+    if (!active) {
+      host->ExecuteDevToolsMethod(0, "Emulation.clearGeolocationOverride",
+                                  nullptr);
+      return;
+    }
+    auto params = CefDictionaryValue::Create();
+    params->SetDouble("latitude", latitude);
+    params->SetDouble("longitude", longitude);
+    params->SetDouble("accuracy", accuracy);
+    host->ExecuteDevToolsMethod(0, "Emulation.setGeolocationOverride", params);
+  }
+  int guest_generation() const { return guest_generation_; }
+  int guest_stale_dropped() const { return guest_stale_dropped_; }
+
+  // Host -> current guest document. Returns false (and sends nothing) when
+  // the generation is not the live document's, e.g. a reply that raced a
+  // navigation, reload or crash.
+  bool DeliverToGuest(int generation, const std::string &data) {
+    if (!guest_ || !browser_ || guest_nonce_.empty() ||
+        generation != guest_generation_ || data.size() > kGuestMaxMessageBytes)
+      return false;
+    auto message = CefProcessMessage::Create(kGuestDeliverMessageName);
+    auto args = message->GetArgumentList();
+    args->SetString(0, guest_nonce_);
+    args->SetString(1, data);
+    browser_->GetMainFrame()->SendProcessMessage(PID_RENDERER, message);
+    return true;
+  }
 
   // CefClient
   CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
@@ -300,6 +427,75 @@ public:
   CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
   CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override {
     return this;
+  }
+  CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
+  CefRefPtr<CefPermissionHandler> GetPermissionHandler() override {
+    return this;
+  }
+
+  bool OnShowPermissionPrompt(
+      CefRefPtr<CefBrowser> browser, uint64_t prompt_id,
+      const CefString &requesting_origin, uint32_t requested_permissions,
+      CefRefPtr<CefPermissionPromptCallback> callback) override {
+    // CEF reports permission scope at the requesting origin but does not
+    // identify a requesting subframe here. Chromium's Permissions Policy
+    // blocks cross-origin frames by default; a Guest page that explicitly
+    // delegates geolocation to an iframe gives it the same Guest mock scope.
+    (void)prompt_id;
+    if (!guest_ || !browser || browser->GetIdentifier() != browser_id_ ||
+        (requested_permissions & CEF_PERMISSION_TYPE_GEOLOCATION) == 0)
+      return false;
+    CefURLParts requested_parts;
+    CefURLParts page_parts;
+    const bool same_origin =
+        CefParseURL(requesting_origin, requested_parts) &&
+        CefParseURL(browser->GetMainFrame()->GetURL(), page_parts) &&
+        CefString(&requested_parts.origin).ToString() ==
+            CefString(&page_parts.origin).ToString();
+    const bool only_geolocation =
+        (requested_permissions & ~CEF_PERMISSION_TYPE_GEOLOCATION) == 0;
+    const bool mock_active =
+        guest_mock_geolocation_.load(std::memory_order_relaxed);
+    callback->Continue(same_origin && only_geolocation && mock_active
+                           ? CEF_PERMISSION_RESULT_ACCEPT
+                           : CEF_PERMISSION_RESULT_DENY);
+    return true;
+  }
+
+  // A same-origin child frame can reach objects on its parent window even
+  // when no bridge was injected into the child context. Deny navigations to
+  // a trusted origin in subframes so page code cannot borrow the top frame's
+  // V8 capability by calling parent.__bunium.send(). Third-party frames stay
+  // loadable and have no bridge; their cross-origin boundary protects the
+  // trusted top-frame object.
+  bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
+                      CefRefPtr<CefFrame> frame,
+                      CefRefPtr<CefRequest> request, bool user_gesture,
+                      bool is_redirect) override {
+    if (frame->IsMain())
+      return false;
+    CefURLParts parts;
+    if (!CefParseURL(request->GetURL(), parts))
+      return false;
+    std::string origin = CefString(&parts.origin).ToString();
+    if (!origin.empty() && origin.back() == '/')
+      origin.pop_back();
+    return std::find(trusted_origins_.begin(), trusted_origins_.end(), origin) !=
+           trusted_origins_.end();
+  }
+
+  // A crashed/killed renderer takes its guest document with it: forget the
+  // nonce so pending host replies are dropped, and tell the host.
+  void OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser,
+                                 TerminationStatus status, int error_code,
+                                 const CefString &error_string) override {
+    if (!guest_)
+      return;
+    guest_nonce_.clear();
+    auto event = GuestEvent("crashed");
+    event->SetInt("status", static_cast<int>(status));
+    event->SetInt("code", error_code);
+    QueueGuestEvent(event);
   }
 
   // CefContextMenuHandler -- without an explicit handler, CEF falls back to
@@ -335,6 +531,18 @@ public:
   // CefLifeSpanHandler
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
     browser_ = browser;
+    browser_id_ = browser->GetIdentifier();
+    if (close_requested_) {
+      // The owner closed this view before CEF finished creating it. Close
+      // on a later UI task: closing re-entrantly from OnAfterCreated
+      // crashed inside CEF.
+      CefPostTask(TID_UI, new CloseBrowserTask(browser));
+      return;
+    }
+    // A host may configure this guest before CEF finishes creating its
+    // browser. Apply the retained mock as soon as the exact target exists.
+    ApplyMockGeolocation(browser);
+    ApplyGuestInputEmulation(browser);
     if (BuniumVerbose()) {
       fprintf(stderr, "[after-created] id=%d\n", browser->GetIdentifier());
       fprintf(stderr, "[startup-diag] t=%lld us stage=after_created\n",
@@ -363,6 +571,16 @@ public:
   }
   void OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
                  int httpStatusCode) override {
+    if (guest_ && frame->IsMain()) {
+      // Renderer reloads and crash recovery create a new DevTools target state.
+      // Restore the mock before notifying the host that this document loaded.
+      ApplyMockGeolocation(browser);
+      ApplyGuestInputEmulation(browser);
+      auto event = GuestEvent("load");
+      event->SetInt("status", httpStatusCode);
+      event->SetString("url", frame->GetURL());
+      QueueGuestEvent(event);
+    }
     if (frame->IsMain() && BuniumVerbose()) {
       fprintf(stderr, "[load-end] code=%d url=%s\n", httpStatusCode,
               frame->GetURL().ToString().c_str());
@@ -373,6 +591,12 @@ public:
   void OnLoadError(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
                    ErrorCode errorCode, const CefString &errorText,
                    const CefString &failedUrl) override {
+    if (guest_ && frame->IsMain()) {
+      auto event = GuestEvent("load-error");
+      event->SetInt("code", static_cast<int>(errorCode));
+      event->SetString("url", failedUrl);
+      QueueGuestEvent(event);
+    }
     if (frame->IsMain()) {
       fprintf(stderr, "[load-error] code=%d text=%s url=%s\n", (int)errorCode,
               errorText.ToString().c_str(), failedUrl.ToString().c_str());
@@ -393,10 +617,91 @@ public:
   bool GetScreenInfo(CefRefPtr<CefBrowser> browser,
                      CefScreenInfo &screen_info) override {
     screen_info.device_scale_factor = static_cast<float>(device_scale_factor_);
+    if (emulation_active_) {
+      screen_info.rect = CefRect(0, 0, screen_width_, screen_height_);
+      screen_info.available_rect = screen_info.rect;
+    }
     return true;
   }
 
+  bool SetDeviceEmulation(int screen_width, int screen_height, double scale) {
+    if (screen_width < 1 || screen_height < 1 || screen_width > 16384 ||
+        screen_height > 16384 || !std::isfinite(scale) || scale < 0.25 ||
+        scale > 8.0)
+      return false;
+    screen_width_ = screen_width;
+    screen_height_ = screen_height;
+    SetDeviceScaleFactor(scale);
+    emulation_active_ = true;
+    if (browser_)
+      browser_->GetHost()->NotifyScreenInfoChanged();
+    return true;
+  }
+
+  bool SetGuestInputEmulation(int touch_flags, int pointer_flags) {
+    if (!guest_ || touch_flags < 0 || touch_flags > 33 || pointer_flags < 0 ||
+        pointer_flags > 127)
+      return false;
+    const int primary = pointer_flags & 3;
+    const int any = (pointer_flags >> 2) & 3;
+    if ((pointer_flags & 64) &&
+        (primary > 2 || any > 2 || (primary != 0 && any == 0) ||
+         ((pointer_flags & 16) && !(pointer_flags & 32))))
+      return false;
+    guest_touch_flags_ = touch_flags;
+    guest_pointer_flags_ = pointer_flags;
+    guest_input_emulation_configured_ = true;
+    if (browser_)
+      ApplyGuestInputEmulation(browser_);
+    return true;
+  }
+
+  void ApplyGuestInputEmulation(CefRefPtr<CefBrowser> browser) {
+    if (!guest_ || !browser || !browser->IsValid() ||
+        !guest_input_emulation_configured_)
+      return;
+    auto host = browser->GetHost();
+    const bool touch_enabled = (guest_touch_flags_ & 1) != 0;
+    const int max_touch_points = touch_enabled ? guest_touch_flags_ >> 1 : 1;
+    auto touch = CefDictionaryValue::Create();
+    touch->SetBool("enabled", touch_enabled);
+    touch->SetInt("maxTouchPoints", max_touch_points);
+    host->ExecuteDevToolsMethod(0, "Emulation.setTouchEmulationEnabled", touch);
+
+    auto mouse_touch = CefDictionaryValue::Create();
+    mouse_touch->SetBool("enabled", touch_enabled);
+    mouse_touch->SetString("configuration", touch_enabled ? "mobile" : "desktop");
+    host->ExecuteDevToolsMethod(0, "Emulation.setEmitTouchEventsForMouse", mouse_touch);
+
+    auto params = CefDictionaryValue::Create();
+    auto features = CefListValue::Create();
+    if (guest_pointer_flags_ & 64) {
+      const char *names[] = {"none", "coarse", "fine"};
+      const int codes[] = {guest_pointer_flags_ & 3,
+                           (guest_pointer_flags_ >> 2) & 3};
+      const char *keys[] = {"pointer", "any-pointer"};
+      for (size_t i = 0; i < 2; ++i) {
+        auto feature = CefDictionaryValue::Create();
+        feature->SetString("name", keys[i]);
+        feature->SetString("value", names[codes[i]]);
+        const size_t index = features->GetSize();
+        features->SetDictionary(index, feature);
+      }
+      for (size_t i = 0; i < 2; ++i) {
+        auto feature = CefDictionaryValue::Create();
+        feature->SetString("name", i == 0 ? "hover" : "any-hover");
+        feature->SetString("value",
+                           (guest_pointer_flags_ & (16 << i)) ? "1" : "0");
+        features->SetDictionary(features->GetSize(), feature);
+      }
+    }
+    params->SetList("features", features);
+    host->ExecuteDevToolsMethod(0, "Emulation.setEmulatedMedia", params);
+  }
+
   void SetDeviceScaleFactor(double scale) {
+    if (emulation_active_)
+      return;
     if (scale == device_scale_factor_)
       return;
     device_scale_factor_ = scale;
@@ -436,6 +741,16 @@ public:
 
   void AttachWindow(void *native_window) { native_window_ = native_window; }
 
+  // Detaches paint/bounds targets (which the owner frees next) and closes
+  // the browser now or, if CEF hasn't created it yet, in OnAfterCreated.
+  void RequestClose() {
+    close_requested_ = true;
+    native_window_ = nullptr;
+    tracked_sublayer_ = nullptr;
+    if (browser_)
+      browser_->GetHost()->CloseBrowser(true);
+  }
+
   // The sublayer (see bunium_create_sublayer) that this view's page reports
   // its DOM element bounds against -- e.g. the outer app tracking where its
   // <bunium-webview> element sits. Not the same as native_window_: that's
@@ -469,6 +784,35 @@ public:
                                 CefProcessId source_process,
                                 CefRefPtr<CefProcessMessage> message) override {
     const auto &name = message->GetName();
+    if (name == kGuestContextMessageName || name == kGuestPostMessageName) {
+      // Identity comes from CEF (this client's browser, main frame, renderer
+      // source), never from the payload.
+      if (!guest_ || source_process != PID_RENDERER || !browser || !frame ||
+          !frame->IsMain() || browser->GetIdentifier() != browser_id_)
+        return true;
+      auto args = message->GetArgumentList();
+      std::string nonce = args->GetString(0).ToString();
+      if (name == kGuestContextMessageName) {
+        guest_nonce_ = nonce;
+        guest_generation_ += 1;
+        auto event = GuestEvent("document");
+        event->SetString("url", args->GetString(1));
+        QueueGuestEvent(event);
+        return true;
+      }
+      std::string data = args->GetString(1).ToString();
+      if (nonce.empty() || nonce != guest_nonce_ ||
+          data.size() > kGuestMaxMessageBytes) {
+        guest_stale_dropped_ += 1;
+        return true;
+      }
+      auto event = GuestEvent("message");
+      event->SetString("data", data);
+      QueueGuestEvent(event);
+      return true;
+    }
+    if (!IsAuthorizedFrame(browser, frame, source_process))
+      return false;
     if (name == kBoundsMessageName) {
       if (!tracked_sublayer_)
         return true;
@@ -521,12 +865,48 @@ public:
   }
 
   CefRefPtr<CefBrowser> browser() { return browser_; }
+  bool close_requested() const { return close_requested_; }
   FrameBuffer &frame() { return frame_; }
   uint64_t frame_count() const {
     return frame_count_.load(std::memory_order_relaxed);
   }
 
 private:
+  CefRefPtr<CefDictionaryValue> GuestEvent(const char *type) const {
+    auto event = CefDictionaryValue::Create();
+    event->SetString("type", type);
+    event->SetInt("generation", guest_generation_);
+    return event;
+  }
+
+  void QueueGuestEvent(CefRefPtr<CefDictionaryValue> event) {
+    auto value = CefValue::Create();
+    value->SetDictionary(event);
+    std::string json = CefWriteJSON(value, JSON_WRITER_DEFAULT).ToString();
+    {
+      std::lock_guard<std::mutex> lock(inbox_.mtx);
+      inbox_.messages.emplace_back(kGuestEventName, std::move(json));
+    }
+    if (g_wake_js_fn)
+      g_wake_js_fn();
+  }
+
+  bool IsAuthorizedFrame(CefRefPtr<CefBrowser> browser,
+                         CefRefPtr<CefFrame> frame,
+                         CefProcessId source_process) const {
+    if (source_process != PID_RENDERER || !browser || !frame ||
+        !frame->IsMain() || browser->GetIdentifier() != browser_id_)
+      return false;
+    CefURLParts parts;
+    if (!CefParseURL(frame->GetURL(), parts))
+      return false;
+    std::string origin = CefString(&parts.origin).ToString();
+    if (!origin.empty() && origin.back() == '/')
+      origin.pop_back();
+    return std::find(trusted_origins_.begin(), trusted_origins_.end(), origin) !=
+           trusted_origins_.end();
+  }
+
   int width_;
   int height_;
   CefRefPtr<CefBrowser> browser_;
@@ -535,12 +915,59 @@ private:
   void *native_window_ = nullptr;
   void *tracked_sublayer_ = nullptr;
   double device_scale_factor_ = 1.0;
+  int screen_width_ = 0;
+  int screen_height_ = 0;
+  bool emulation_active_ = false;
+  int guest_touch_flags_ = 0;
+  int guest_pointer_flags_ = 0;
+  bool guest_input_emulation_configured_ = false;
   bool first_paint_logged_ = false;
   MessageInbox inbox_;
   std::vector<Rect> drag_regions_;
+  int browser_id_ = -1;
+  std::vector<std::string> trusted_origins_;
+  bool close_requested_ = false;
+  bool guest_ = false;
+  std::string guest_nonce_;
+  int guest_generation_ = 0;
+  int guest_stale_dropped_ = 0;
+  std::atomic<bool> guest_mock_geolocation_{false};
+  std::mutex guest_geolocation_mtx_;
+  bool guest_geolocation_configured_ = false;
+  double guest_latitude_ = 0;
+  double guest_longitude_ = 0;
+  double guest_accuracy_ = 0;
 
   IMPLEMENT_REFCOUNTING(BuniumClient);
 };
+
+// Changes geolocation emulation on the exact guest browser. The caller posts
+// this task from Bun's thread; CEF requires ExecuteDevToolsMethod on TID_UI.
+class GuestGeolocationTask : public CefTask {
+public:
+  GuestGeolocationTask(CefRefPtr<BuniumClient> client,
+                       CefRefPtr<CefBrowser> browser, bool clear, double latitude,
+                       double longitude, double accuracy)
+      : client_(std::move(client)), browser_(std::move(browser)), clear_(clear), latitude_(latitude),
+        longitude_(longitude), accuracy_(accuracy) {}
+
+  void Execute() override {
+    if (!browser_ || !browser_->IsValid())
+      return;
+    client_->SetMockGeolocation(clear_, latitude_, longitude_, accuracy_);
+    client_->ApplyMockGeolocation(browser_);
+  }
+
+private:
+  CefRefPtr<BuniumClient> client_;
+  CefRefPtr<CefBrowser> browser_;
+  bool clear_;
+  double latitude_;
+  double longitude_;
+  double accuracy_;
+  IMPLEMENT_REFCOUNTING(GuestGeolocationTask);
+};
+
 
 // Backs window.__bunium.reportBounds(x, y, w, h) in the renderer process.
 // Runs on the V8/renderer-main thread; just packs args into a
@@ -587,6 +1014,53 @@ public:
 private:
   IMPLEMENT_REFCOUNTING(BuniumV8Handler);
 };
+
+// The guest bridge's only native capability: post(string) -> browser, tagged
+// with the nonce of the document it was created for. Held in a closure by
+// the host bridge script; never installed on a global.
+class BuniumGuestPostHandler : public CefV8Handler {
+public:
+  explicit BuniumGuestPostHandler(std::string nonce)
+      : nonce_(std::move(nonce)) {}
+
+  bool Execute(const CefString &name, CefRefPtr<CefV8Value> object,
+               const CefV8ValueList &arguments, CefRefPtr<CefV8Value> &retval,
+               CefString &exception) override {
+    if (arguments.size() != 1 || !arguments[0]->IsString()) {
+      exception = "post expects one string";
+      return true;
+    }
+    std::string data = arguments[0]->GetStringValue().ToString();
+    if (data.size() > kGuestMaxMessageBytes) {
+      exception = "message too large";
+      return true;
+    }
+    CefRefPtr<CefV8Context> context = CefV8Context::GetCurrentContext();
+    auto message = CefProcessMessage::Create(kGuestPostMessageName);
+    auto args = message->GetArgumentList();
+    args->SetString(0, nonce_);
+    args->SetString(1, data);
+    context->GetFrame()->SendProcessMessage(PID_BROWSER, message);
+    return true;
+  }
+
+private:
+  std::string nonce_;
+  IMPLEMENT_REFCOUNTING(BuniumGuestPostHandler);
+};
+
+static std::string RandomNonce() {
+  static std::atomic<uint64_t> counter{0};
+  uint64_t a = static_cast<uint64_t>(
+      std::chrono::steady_clock::now().time_since_epoch().count());
+  uint64_t b = reinterpret_cast<uintptr_t>(&counter) ^
+               (counter.fetch_add(1) * 0x9E3779B97F4A7C15ull);
+  uint64_t c = static_cast<uint64_t>(rand()) << 32 | static_cast<uint64_t>(rand());
+  char buffer[64];
+  snprintf(buffer, sizeof(buffer), "%016llx%016llx",
+           (unsigned long long)(a ^ c), (unsigned long long)(b ^ (c << 7)));
+  return buffer;
+}
 
 // Production static-file serving: `bunium://app/<path>` resolves against a
 // registered root directory on disk and streams the file back, entirely
@@ -768,6 +1242,46 @@ public:
     return this;
   }
 
+  void OnBrowserCreated(CefRefPtr<CefBrowser> browser,
+                        CefRefPtr<CefDictionaryValue> extra_info) override {
+    std::vector<std::string> origins;
+    if (extra_info && extra_info->HasKey("bunium_trusted_origins")) {
+      std::string rules = extra_info->GetString("bunium_trusted_origins").ToString();
+      size_t start = 0;
+      while (start < rules.size()) {
+        size_t end = rules.find('\n', start);
+        std::string rule = rules.substr(start, end == std::string::npos
+                                                   ? std::string::npos
+                                                   : end - start);
+        CefURLParts parts;
+        if (CefParseURL(rule, parts) && parts.username.length == 0 &&
+            parts.password.length == 0 && parts.query.length == 0 &&
+            parts.fragment.length == 0 &&
+            (parts.path.length == 0 || CefString(&parts.path).ToString() == "/")) {
+          std::string origin = CefString(&parts.origin).ToString();
+          if (!origin.empty() && origin.back() == '/')
+            origin.pop_back();
+          if (rule == origin || rule == origin + "/")
+            origins.push_back(origin);
+        }
+        if (end == std::string::npos)
+          break;
+        start = end + 1;
+      }
+    }
+    trusted_origins_[browser->GetIdentifier()] = std::move(origins);
+    if (extra_info && extra_info->HasKey("bunium_guest_bridge")) {
+      std::string bridge = extra_info->GetString("bunium_guest_bridge").ToString();
+      if (bridge.size() <= kGuestMaxBridgeBytes)
+        guest_bridges_[browser->GetIdentifier()] = std::move(bridge);
+    }
+  }
+
+  void OnBrowserDestroyed(CefRefPtr<CefBrowser> browser) override {
+    trusted_origins_.erase(browser->GetIdentifier());
+    guest_bridges_.erase(browser->GetIdentifier());
+  }
+
   // Force the real Metal ANGLE backend instead of falling back to
   // SwiftShader (software Vulkan), which adds GPU-process overhead with
   // none of the speed benefit.
@@ -783,21 +1297,8 @@ public:
     // examples, 6/6 scaffolds); re-shipping to re-measure against Electron.
     command_line->AppendSwitch("in-process-gpu");
 #if defined(__APPLE__)
-    // Verified clean on macOS (37/37 examples, real RSS/process-count win,
-    // no perf cost -- see ARCHITECTURE.md #19). NOT enabled on Windows/Linux:
-    // docs/guide/dev-from-mac.md documents a real "bun + in-process CEF
-    // SEGVs" finding from Windows bring-up with this exact flag -- gate to
-    // mac only until independently verified on those platforms, don't let a
-    // shared-header change silently ship an unverified crash risk there.
-    command_line->AppendSwitch("single-process");
-    // --no-proxy-server (needed on GitHub Actions' macOS runners -- PAC/WPAD
-    // auto-discovery there breaks single-process mode outright, not just
-    // the documented harmless log line below) is injected into the real
-    // initial argv in bunium_shim.cpp's CefInitialize call instead of here:
-    // SystemNetworkContextManager reads the command line for its
-    // single-process + auto-proxy check before OnBeforeCommandLineProcessing
-    // switches get merged back in, so appending it only here is invisible
-    // to that check.
+    // Keep renderer processes separate. CEF's macOS Seatbelt sandbox cannot
+    // constrain a renderer merged into the Bun browser process.
 #endif
     // Linux verification (2026-09-03, real hardware -- WSL2 Ubuntu 24.04
     // x64, native g++ build via native/linux/build.sh, not emulation):
@@ -948,6 +1449,23 @@ public:
   void OnContextCreated(CefRefPtr<CefBrowser> browser,
                         CefRefPtr<CefFrame> frame,
                         CefRefPtr<CefV8Context> context) override {
+    auto guest = guest_bridges_.find(browser->GetIdentifier());
+    if (guest != guest_bridges_.end()) {
+      if (frame->IsMain())
+        InstallGuestBridge(frame, context, guest->second);
+      return; // guests never receive the trusted __bunium bridge
+    }
+    auto trusted = trusted_origins_.find(browser->GetIdentifier());
+    CefURLParts parts;
+    if (!frame->IsMain() || trusted == trusted_origins_.end() ||
+        !CefParseURL(frame->GetURL(), parts))
+      return;
+    std::string origin = CefString(&parts.origin).ToString();
+    if (!origin.empty() && origin.back() == '/')
+      origin.pop_back();
+    if (std::find(trusted->second.begin(), trusted->second.end(), origin) ==
+        trusted->second.end())
+      return;
     if (BuniumVerbose()) {
       fprintf(stderr, "[context-created] url=%s\n",
               frame->GetURL().ToString().c_str());
@@ -1038,6 +1556,9 @@ public:
                          CefRefPtr<CefFrame> frame,
                          CefRefPtr<CefV8Context> context) override {
     contexts_.erase(frame->GetIdentifier().ToString());
+    auto guest = guest_contexts_.find(frame->GetIdentifier().ToString());
+    if (guest != guest_contexts_.end() && guest->second.context->IsSame(context))
+      guest_contexts_.erase(guest);
   }
 
   // Renderer-side half of main -> renderer push: looks up the V8 context
@@ -1048,7 +1569,27 @@ public:
                                 CefRefPtr<CefFrame> frame,
                                 CefProcessId source_process,
                                 CefRefPtr<CefProcessMessage> message) override {
-    if (message->GetName() != kDispatchMessageName)
+    if (message->GetName() == kGuestDeliverMessageName) {
+      if (source_process != PID_BROWSER || !frame->IsMain())
+        return true;
+      auto it = guest_contexts_.find(frame->GetIdentifier().ToString());
+      auto args = message->GetArgumentList();
+      if (it == guest_contexts_.end() ||
+          it->second.nonce != args->GetString(0).ToString() ||
+          !it->second.receiver || !it->second.receiver->IsFunction())
+        return true;
+      CefRefPtr<CefV8Context> context = it->second.context;
+      if (!context->Enter())
+        return true;
+      CefV8ValueList js_args;
+      js_args.push_back(CefV8Value::CreateString(args->GetString(1)));
+      it->second.receiver->ExecuteFunction(nullptr, js_args);
+      context->Exit();
+      return true;
+    }
+    if (message->GetName() != kDispatchMessageName ||
+        source_process != PID_BROWSER || !frame->IsMain() ||
+        trusted_origins_.find(browser->GetIdentifier()) == trusted_origins_.end())
       return false;
     BuniumIpcDiagLog("renderer_dispatch_recv", "renderer");
 
@@ -1079,7 +1620,53 @@ public:
   }
 
 private:
+  struct GuestContext {
+    CefRefPtr<CefV8Context> context;
+    CefRefPtr<CefV8Value> receiver;
+    std::string nonce;
+  };
+
+  // Runs the host bridge synchronously at context creation, i.e. before any
+  // page script. The script body is wrapped as a function of one parameter
+  // (post); if it returns a function, that becomes the receiver for host ->
+  // guest messages.
+  void InstallGuestBridge(CefRefPtr<CefFrame> frame,
+                          CefRefPtr<CefV8Context> context,
+                          const std::string &bridge) {
+    std::string nonce = RandomNonce();
+    CefRefPtr<CefV8Value> factory;
+    CefRefPtr<CefV8Exception> exception;
+    std::string wrapped =
+        "(function(post){\"use strict\";\n" + bridge + "\n})";
+    if (!context->Eval(wrapped, "bunium://guest-bridge/", 1, factory,
+                       exception) ||
+        !factory || !factory->IsFunction()) {
+      fprintf(stderr, "[guest] bridge failed to compile: %s\n",
+              exception ? exception->GetMessage().ToString().c_str() : "?");
+      return;
+    }
+    CefV8ValueList args;
+    args.push_back(CefV8Value::CreateFunction(
+        "post", new BuniumGuestPostHandler(nonce)));
+    CefRefPtr<CefV8Value> receiver = factory->ExecuteFunction(nullptr, args);
+    if (!receiver || factory->HasException()) {
+      factory->ClearException();
+      fprintf(stderr, "[guest] bridge threw during install\n");
+      receiver = nullptr;
+    }
+    guest_contexts_[frame->GetIdentifier().ToString()] = {context, receiver,
+                                                          nonce};
+    auto message = CefProcessMessage::Create(kGuestContextMessageName);
+    auto message_args = message->GetArgumentList();
+    message_args->SetString(0, nonce);
+    message_args->SetString(1, frame->GetURL());
+    frame->SendProcessMessage(PID_BROWSER, message);
+  }
+
   std::map<std::string, CefRefPtr<CefV8Context>> contexts_;
+  std::map<int, std::vector<std::string>> trusted_origins_;
+  std::map<int, std::string> guest_bridges_;
+  std::map<std::string, GuestContext> guest_contexts_;
 
   IMPLEMENT_REFCOUNTING(BuniumApp);
 };

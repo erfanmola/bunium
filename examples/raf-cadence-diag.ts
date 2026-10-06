@@ -13,8 +13,15 @@ const lib = dlopen(paths.shim, {
   },
   bunium_do_message_loop_work: { args: [], returns: FFIType.void },
   bunium_pump_native_events: { args: [], returns: FFIType.void },
-  bunium_create_view: {
-    args: [FFIType.cstring, FFIType.i32, FFIType.i32, FFIType.i32],
+  bunium_create_trusted_view: {
+    args: [
+      FFIType.cstring,
+      FFIType.i32,
+      FFIType.i32,
+      FFIType.i32,
+      FFIType.cstring,
+      FFIType.ptr,
+    ],
     returns: FFIType.ptr,
   },
   bunium_create_native_window: {
@@ -72,7 +79,14 @@ const html = `data:text/html,${encodeURIComponent(`
 </script>
 `)}`;
 
-const view = lib.symbols.bunium_create_view(cstr(html), 600, 400, 0);
+const view = lib.symbols.bunium_create_trusted_view(
+  cstr(html),
+  600,
+  400,
+  0,
+  cstr(""),
+  null,
+);
 lib.symbols.bunium_attach_window(view, win);
 
 const start = performance.now();

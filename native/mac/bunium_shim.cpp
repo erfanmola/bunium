@@ -31,6 +31,7 @@
 #include "bunium_common.h"
 #include "include/cef_app.h"
 #include "include/cef_parser.h"
+#include "include/cef_request_context.h"
 #include "include/cef_values.h"
 #include "include/wrapper/cef_helpers.h"
 
@@ -40,6 +41,7 @@
 
 struct BuniumView {
   CefRefPtr<BuniumClient> client;
+  CefRefPtr<CefRequestContext> context; // null = CEF's global context
   std::vector<uint8_t> export_buf; // scratch copy returned to caller
   std::string export_message;      // scratch copy for bunium_poll_message
 };
@@ -54,6 +56,82 @@ struct BuniumView {
 #endif
 
 static CefRefPtr<BuniumApp> g_app;
+static std::atomic<int> g_live_views{0};
+
+// ---- Partition sessions (isolated persistent CEF request contexts) ----
+//
+// A session is a CefRequestContext whose cache_path is
+// <effective root_cache_path>/bp.<key>.g<generation>. Chrome-style CEF only
+// creates on-disk profiles that are *direct* children of root_cache_path
+// (anything deeper silently becomes an in-memory profile), hence the flat
+// name. Callers
+// never pass a filesystem path: they pass "<key>/<generation>", validated
+// here against a fixed charset, so a partition can't escape the partition
+// root or alias another partition. CEF requires every request-context
+// cache_path to be a child of CefSettings.root_cache_path; when the app
+// leaves that empty (dev runs), CEF uses its documented platform default,
+// which DefaultCefRootCachePath() mirrors. bunium_session_create
+// double-checks the context really got that path (GetCachePath) and fails
+// rather than silently falling back to an in-memory/incognito context.
+struct BuniumSession {
+  CefRefPtr<CefRequestContext> context;
+};
+
+static std::string g_partition_root; // effective root_cache_path
+
+#if defined(_WIN32)
+static const char kPathSep = '\\';
+#else
+static const char kPathSep = '/';
+#endif
+
+static std::string DefaultCefRootCachePath() {
+#if defined(_WIN32)
+  const char *base = getenv("LOCALAPPDATA");
+  return base ? std::string(base) + "\\CEF\\User Data" : std::string();
+#elif defined(__APPLE__)
+  const char *home = getenv("HOME");
+  return home ? std::string(home) + "/Library/Application Support/CEF/User Data"
+              : std::string();
+#else
+  const char *home = getenv("HOME");
+  return home ? std::string(home) + "/.config/cef_user_data" : std::string();
+#endif
+}
+
+static bool IsKeyChar(char c, bool first) {
+  if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
+    return true;
+  return !first && (c == '-' || c == '_');
+}
+
+// "<key>/g<n>", key = [a-z0-9][a-z0-9_-]{0,63}, n = 1-9 digits, no leading 0.
+static bool IsValidPartitionName(const std::string &name) {
+  size_t slash = name.find('/');
+  if (slash == std::string::npos || slash == 0 || slash > 64)
+    return false;
+  for (size_t i = 0; i < slash; ++i) {
+    if (!IsKeyChar(name[i], i == 0))
+      return false;
+  }
+  if (slash + 2 > name.size() || name[slash + 1] != 'g')
+    return false;
+  size_t digits = name.size() - slash - 2;
+  if (digits < 1 || digits > 9 || name[slash + 2] == '0')
+    return false;
+  for (size_t i = slash + 2; i < name.size(); ++i) {
+    if (name[i] < '0' || name[i] > '9')
+      return false;
+  }
+  return true;
+}
+
+static std::string NormalizeSeparators(std::string value) {
+  std::replace(value.begin(), value.end(), '\\', '/');
+  while (value.size() > 1 && value.back() == '/')
+    value.pop_back();
+  return value;
+}
 
 // IPC-latency fix, take 2: an AF_UNIX socket, with Bun itself owning the
 // server side (Bun.listen({unix: path, ...}), src/app.ts), lets native
@@ -239,6 +317,26 @@ extern "C" void bunium_sublayer_get_frame(void *layer_handle, int *out_x,
 extern "C" void bunium_sublayer_get_clip(void *layer_handle, int *out_clipped,
                                          int *out_x, int *out_y, int *out_width,
                                          int *out_height);
+extern "C" bool bunium_sublayer_contains_point(void *layer_handle, int x,
+                                                int y);
+
+static bool SublayerContainsPoint(void *handle, int x, int y) {
+#if defined(__APPLE__)
+  return bunium_sublayer_contains_point(handle, x, y);
+#else
+  int sx, sy, sw, sh;
+  bunium_sublayer_get_frame(handle, &sx, &sy, &sw, &sh);
+  int clipped, cx, cy, cw, ch;
+  bunium_sublayer_get_clip(handle, &clipped, &cx, &cy, &cw, &ch);
+  if (clipped) {
+    sx = cx;
+    sy = cy;
+    sw = cw;
+    sh = ch;
+  }
+  return x >= sx && x < sx + sw && y >= sy && y < sy + sh;
+#endif
+}
 
 // Returns the sublayer handle under (x, y) in window-local coordinates, or
 // nullptr if none (falls back to the window's own primary view). Also
@@ -256,19 +354,7 @@ static void *HitTestSublayer(void *window_handle, int x, int y,
     return nullptr;
   const auto &sublayers = it->second;
   for (auto rit = sublayers.rbegin(); rit != sublayers.rend(); ++rit) {
-    int sx, sy, sw, sh;
-    bunium_sublayer_get_frame(*rit, &sx, &sy, &sw, &sh);
-
-    int clipped, cx, cy, cw, ch;
-    bunium_sublayer_get_clip(*rit, &clipped, &cx, &cy, &cw, &ch);
-    if (clipped) {
-      sx = cx;
-      sy = cy;
-      sw = cw;
-      sh = ch;
-    }
-
-    if (x >= sx && x < sx + sw && y >= sy && y < sy + sh) {
+    if (SublayerContainsPoint(*rit, x, y)) {
       // Local coordinates are still reported relative to the sublayer's
       // true (unclipped) origin -- bunium_sublayer_get_frame's own frame,
       // not the clip rect -- since that's what CEF's own coordinate space
@@ -316,6 +402,10 @@ extern "C" void bunium_sublayer_get_frame(void *layer_handle, int *out_x,
 extern "C" void bunium_close_sublayer(void *layer_handle);
 extern "C" void bunium_sublayer_set_clip(void *layer_handle, int clip_x,
                                          int clip_y, int clip_w, int clip_h);
+extern "C" void bunium_sublayer_set_clip_shape(void *layer_handle, int clip_x,
+                                                int clip_y, int clip_w,
+                                                int clip_h,
+                                                double corner_radius);
 extern "C" void bunium_sublayer_clear_clip(void *layer_handle);
 extern "C" void bunium_sublayer_get_clip(void *layer_handle, int *out_clipped,
                                          int *out_x, int *out_y, int *out_width,
@@ -327,6 +417,10 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
                               const char *framework_dir_path,
                               const char *resources_dir_path,
                               const char *root_cache_path) {
+  if (framework_dir_path && *framework_dir_path)
+    setenv("BUNIUM_FRAMEWORK_DIR", framework_dir_path, 1);
+  if (root_cache_path && *root_cache_path)
+    setenv("BUNIUM_ROOT_CACHE_PATH", root_cache_path, 1);
   if (getenv("BUNIUM_BUNDLE_DEBUG")) {
 #if defined(__APPLE__)
     CFBundleRef mb = CFBundleGetMainBundle();
@@ -376,7 +470,6 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
   // can't resolve -- without this, that manifests as an outright aborted
   // page load (ERR_ABORTED), not just the documented harmless log line
   // (ARCHITECTURE.md #19), and broke the darwin-arm64 release build.
-  injected_argv.push_back("--no-proxy-server");
   const char *switches = getenv("BUNIUM_CEF_SWITCHES");
   if (switches && *switches) {
     std::string s(switches);
@@ -399,7 +492,12 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
   g_app = new BuniumApp();
 
   CefSettings settings;
-  settings.no_sandbox = true;
+  // The packaged launcher sets a per-app cache root. Packaged helpers have
+  // the bundle layout and bootstrap needed for CEF's macOS Seatbelt sandbox;
+  // source-tree development runs use the unsandboxed helper binary.
+  settings.no_sandbox = !(root_cache_path && *root_cache_path);
+  if (!settings.no_sandbox)
+    fprintf(stderr, "[sandbox] packaged macOS sandbox mode enabled\n");
   settings.windowless_rendering_enabled = true;
   settings.multi_threaded_message_loop = false;
   // true: CEF tells the host exactly when it next needs
@@ -447,6 +545,12 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
   if (root_cache_path && *root_cache_path) {
     CefString(&settings.root_cache_path).FromASCII(root_cache_path);
   }
+  {
+    std::string root = (root_cache_path && *root_cache_path)
+                           ? std::string(root_cache_path)
+                           : DefaultCefRootCachePath();
+    g_partition_root = root;
+  }
 
   if (BuniumVerbose())
     fprintf(stderr, "[startup-diag] t=%lld us stage=cef_initialize_start\n",
@@ -486,10 +590,71 @@ BUNIUM_EXPORT void bunium_set_app_root(const char *root_dir_path) {
   g_bunium_scheme_root = root_dir_path;
 }
 
-BUNIUM_EXPORT void *bunium_create_view(const char *url, int width, int height,
-                                       int transparent) {
+// Runtime capability handshake for APIs whose security depends on native
+// frame authorization, not only on the JavaScript wrapper being present.
+BUNIUM_EXPORT int bunium_trusted_origins_api_version() { return 1; }
+
+static void *CreateView(const char *url, int width, int height,
+                        int transparent, const char *trusted_origins,
+                        void *session_handle, const char *guest_bridge,
+                        const char *emulation_json) {
   auto *view = new BuniumView();
-  view->client = new BuniumClient(width, height);
+  g_live_views.fetch_add(1, std::memory_order_relaxed);
+  if (session_handle)
+    view->context = static_cast<BuniumSession *>(session_handle)->context;
+  std::vector<std::string> origins;
+  if (trusted_origins && *trusted_origins) {
+    std::string rules(trusted_origins);
+    size_t start = 0;
+    while (start < rules.size()) {
+      size_t end = rules.find('\n', start);
+      origins.push_back(rules.substr(start, end == std::string::npos
+                                                ? std::string::npos
+                                                : end - start));
+      if (end == std::string::npos)
+        break;
+      start = end + 1;
+    }
+  }
+  view->client = new BuniumClient(width, height, origins);
+  if (guest_bridge) {
+    view->client->EnableGuest();
+    if (emulation_json && *emulation_json) {
+      auto value = CefParseJSON(emulation_json, JSON_PARSER_RFC);
+      if (!value || value->GetType() != VTYPE_DICTIONARY) {
+        delete view;
+        g_live_views.fetch_sub(1, std::memory_order_relaxed);
+        return nullptr;
+      }
+      auto descriptor = value->GetDictionary();
+      auto scale_value = descriptor->GetValue("scale");
+      if (!descriptor->HasKey("screenWidth") ||
+          !descriptor->HasKey("screenHeight") ||
+          !descriptor->HasKey("touch") || !descriptor->HasKey("pointer") ||
+          !scale_value ||
+          (scale_value->GetType() != VTYPE_INT &&
+           scale_value->GetType() != VTYPE_DOUBLE)) {
+        delete view;
+        g_live_views.fetch_sub(1, std::memory_order_relaxed);
+        return nullptr;
+      }
+      const double scale = scale_value->GetType() == VTYPE_INT
+                               ? scale_value->GetInt()
+                               : scale_value->GetDouble();
+      const bool accepted = view->client->SetDeviceEmulation(
+                                descriptor->GetInt("screenWidth"),
+                                descriptor->GetInt("screenHeight"),
+                                scale) &&
+                            view->client->SetGuestInputEmulation(
+                                descriptor->GetInt("touch"),
+                                descriptor->GetInt("pointer"));
+      if (!accepted) {
+        delete view;
+        g_live_views.fetch_sub(1, std::memory_order_relaxed);
+        return nullptr;
+      }
+    }
+  }
 
   CefWindowInfo window_info;
   window_info.SetAsWindowless(kNullWindowHandle);
@@ -510,9 +675,150 @@ BUNIUM_EXPORT void *bunium_create_view(const char *url, int width, int height,
   if (BuniumVerbose())
     fprintf(stderr, "[startup-diag] t=%lld us stage=create_browser_call\n",
             (long long)MonotonicNowUs());
+  CefRefPtr<CefDictionaryValue> extra_info = CefDictionaryValue::Create();
+  std::string serialized_origins;
+  for (const auto &origin : origins) {
+    if (!serialized_origins.empty())
+      serialized_origins.push_back('\n');
+    serialized_origins += origin;
+  }
+  extra_info->SetString("bunium_trusted_origins", serialized_origins);
+  if (guest_bridge)
+    extra_info->SetString("bunium_guest_bridge", guest_bridge);
   CefBrowserHost::CreateBrowser(window_info, view->client, CefString(url),
-                                browser_settings, nullptr, nullptr);
+                                browser_settings, extra_info, view->context);
   return view;
+}
+
+BUNIUM_EXPORT void *bunium_create_view(const char *url, int width, int height,
+                                       int transparent) {
+  return CreateView(url, width, height, transparent, "", nullptr, nullptr,
+                    nullptr);
+}
+
+BUNIUM_EXPORT void *bunium_create_trusted_view(
+    const char *url, int width, int height, int transparent,
+    const char *trusted_origins, void *session_handle) {
+  return CreateView(url, width, height, transparent, trusted_origins,
+                    session_handle, nullptr, nullptr);
+}
+
+// Untrusted guest view (a Mini App): never trusted for __bunium, optionally
+// in an isolated session, with `bridge_script` run at document start in
+// every main-frame document (see kGuestContextMessageName). Returns null if
+// the script is too large.
+BUNIUM_EXPORT void *bunium_create_guest_view(const char *url, int width,
+                                             int height, void *session_handle,
+                                             const char *bridge_script,
+                                             const char *emulation_json) {
+  std::string bridge = bridge_script ? bridge_script : "";
+  if (bridge.size() > kGuestMaxBridgeBytes)
+    return nullptr;
+  return CreateView(url, width, height, 0, "", session_handle, bridge.c_str(),
+                    emulation_json);
+}
+
+// Host -> guest message for a specific document generation. Returns 1 if
+// sent, 0 if the generation is stale (navigated, reloaded or crashed).
+BUNIUM_EXPORT int bunium_guest_post(void *handle, int generation,
+                                    const char *data) {
+  auto *view = static_cast<BuniumView *>(handle);
+  return view->client->DeliverToGuest(generation, data ? data : "") ? 1 : 0;
+}
+
+BUNIUM_EXPORT void bunium_guest_stats(void *handle, int *out_generation,
+                                      int *out_stale_dropped) {
+  auto *view = static_cast<BuniumView *>(handle);
+  *out_generation = view->client->guest_generation();
+  *out_stale_dropped = view->client->guest_stale_dropped();
+}
+
+// Apply a mock coordinate override through DevTools Protocol on this guest's
+// own CefBrowserHost. It never consults or changes host OS location permission.
+BUNIUM_EXPORT int bunium_guest_set_geolocation(void *handle, int clear,
+                                               double latitude,
+                                               double longitude,
+                                               double accuracy) {
+  auto *view = static_cast<BuniumView *>(handle);
+  if (!view || !view->client || !view->client->is_guest())
+    return 0;
+  if (!clear && (!std::isfinite(latitude) || latitude < -90 || latitude > 90 ||
+                 !std::isfinite(longitude) || longitude < -180 ||
+                 longitude > 180 || !std::isfinite(accuracy) || accuracy < 0 ||
+                 accuracy > 100000))
+    return 0;
+  // Retain the value even if CreateBrowser has not reached OnAfterCreated;
+  // that callback applies the pending value to this Guest's future target.
+  view->client->SetMockGeolocation(clear != 0, latitude, longitude, accuracy);
+  auto browser = view->client->browser();
+  if (!browser || !browser->IsValid())
+    return view->client->close_requested() ? 0 : 1;
+  return CefPostTask(TID_UI, new GuestGeolocationTask(
+                                 view->client, browser, clear != 0, latitude,
+                                 longitude, accuracy))
+             ? 1
+             : 0;
+}
+
+
+BUNIUM_EXPORT void bunium_reload(void *handle, int ignore_cache) {
+  auto *view = static_cast<BuniumView *>(handle);
+  auto browser = view->client->browser();
+  if (browser && browser->IsValid())
+    CefPostTask(TID_UI, new ReloadBrowserTask(browser, ignore_cache != 0));
+}
+
+// Views not yet closed, and BuniumClient objects CEF still holds (clients
+// outlive their view until CEF finishes closing the browser).
+BUNIUM_EXPORT void bunium_debug_live_counts(int *out_views, int *out_clients) {
+  *out_views = g_live_views.load(std::memory_order_relaxed);
+  *out_clients = g_live_clients.load(std::memory_order_relaxed);
+}
+
+// Effective CEF root_cache_path, parent of every persistent partition
+// directory (empty before bunium_init or if no root could be resolved). Exposed read-only so the
+// JS side can manage generations/removal without choosing paths itself.
+BUNIUM_EXPORT const char *bunium_partition_root() {
+  return g_partition_root.c_str();
+}
+
+// name: "<key>/g<generation>" for a persistent partition, or empty/null for
+// an ephemeral (in-memory, incognito) one. Returns null for an invalid name
+// or if CEF didn't bind the requested on-disk path.
+BUNIUM_EXPORT void *bunium_session_create(const char *name) {
+  CefRequestContextSettings settings;
+  std::string path;
+  if (name && *name) {
+    std::string value(name);
+    if (!IsValidPartitionName(value) || g_partition_root.empty())
+      return nullptr;
+    size_t slash = value.find('/');
+    path = g_partition_root + kPathSep + "bp." + value.substr(0, slash) + "." +
+           value.substr(slash + 1);
+    CefString(&settings.cache_path).FromString(path);
+    // Telegram clients keep session cookies across app restarts; so does a
+    // simulator partition.
+    settings.persist_session_cookies = 1;
+  }
+  CefRefPtr<CefRequestContext> context =
+      CefRequestContext::CreateContext(settings, nullptr);
+  if (!context)
+    return nullptr;
+  if (!path.empty() && NormalizeSeparators(context->GetCachePath().ToString()) !=
+                           NormalizeSeparators(path)) {
+    fprintf(stderr, "[session] cache path not bound: requested=%s actual=%s\n",
+            path.c_str(), context->GetCachePath().ToString().c_str());
+    return nullptr;
+  }
+  auto *session = new BuniumSession();
+  session->context = context;
+  return session;
+}
+
+// Drops this handle's reference. Views created with the session keep the
+// context alive until they close.
+BUNIUM_EXPORT void bunium_session_release(void *session_handle) {
+  delete static_cast<BuniumSession *>(session_handle);
 }
 
 BUNIUM_EXPORT void bunium_navigate(void *handle, const char *url) {
@@ -646,6 +952,7 @@ BUNIUM_EXPORT double bunium_get_native_window_scale(void *window_handle) {
 }
 
 BUNIUM_EXPORT void bunium_close_native_window(void *window_handle) {
+  g_window_sublayers.erase(window_handle);
   g_target_to_client.erase(window_handle);
   bunium_window_close(window_handle);
 }
@@ -687,6 +994,24 @@ BUNIUM_EXPORT void bunium_set_native_sublayer_clip(void *layer_handle,
                                                    int clip_x, int clip_y,
                                                    int clip_w, int clip_h) {
   bunium_sublayer_set_clip(layer_handle, clip_x, clip_y, clip_w, clip_h);
+}
+
+BUNIUM_EXPORT int bunium_set_native_sublayer_clip_shape(
+    void *layer_handle, int clip_x, int clip_y, int clip_w, int clip_h,
+    double corner_radius) {
+#if defined(__APPLE__)
+  if (!layer_handle || clip_w < 1 || clip_h < 1 || !std::isfinite(corner_radius) ||
+      corner_radius < 0 || corner_radius > std::min(clip_w, clip_h) / 2.0)
+    return 0;
+  bunium_sublayer_set_clip_shape(layer_handle, clip_x, clip_y, clip_w, clip_h,
+                                 corner_radius);
+  return 1;
+#else
+  if (!layer_handle || corner_radius != 0)
+    return 0;
+  bunium_sublayer_set_clip(layer_handle, clip_x, clip_y, clip_w, clip_h);
+  return 1;
+#endif
 }
 
 BUNIUM_EXPORT void bunium_clear_native_sublayer_clip(void *layer_handle) {
@@ -969,10 +1294,9 @@ BUNIUM_EXPORT void bunium_dispatch_key_event(void *window_handle,
 
 BUNIUM_EXPORT void bunium_close_view(void *handle) {
   auto *view = static_cast<BuniumView *>(handle);
-  auto browser = view->client->browser();
-  if (browser)
-    browser->GetHost()->CloseBrowser(true);
+  view->client->RequestClose();
   delete view;
+  g_live_views.fetch_sub(1, std::memory_order_relaxed);
 }
 
 BUNIUM_EXPORT void bunium_shutdown() {

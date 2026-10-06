@@ -46,6 +46,7 @@
 //     (only frame_enabled=false, non-sublayer, resizable-aware).
 //   - Frames stay top-left-origin BGRA, matching CEF's OSR output directly.
 #include <X11/Xlib.h>
+#include <X11/Xatom.h>
 #include <X11/Xresource.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/shape.h>
@@ -92,6 +93,36 @@ Display* GetDisplay() {
     }
   }
   return g_display;
+}
+
+bool WindowManagerSupports(Display* d, Atom requested) {
+  Atom supported = XInternAtom(d, "_NET_SUPPORTED", False);
+  Atom actual_type = None;
+  int actual_format = 0;
+  unsigned long count = 0, remaining = 0;
+  unsigned char* bytes = nullptr;
+  const int status = XGetWindowProperty(
+      d, DefaultRootWindow(d), supported, 0, 4096, False, XA_ATOM,
+      &actual_type, &actual_format, &count, &remaining, &bytes);
+  bool found = false;
+  if (status == Success && actual_type == XA_ATOM && actual_format == 32 && bytes) {
+    auto* atoms = reinterpret_cast<Atom*>(bytes);
+    for (unsigned long i = 0; i < count; ++i) {
+      if (atoms[i] == requested) {
+        found = true;
+        break;
+      }
+    }
+  }
+  if (bytes) XFree(bytes);
+  return found;
+}
+
+bool SupportsMaximize(Display* d) {
+  return WindowManagerSupports(
+             d, XInternAtom(d, "_NET_WM_STATE_MAXIMIZED_VERT", False)) &&
+         WindowManagerSupports(
+             d, XInternAtom(d, "_NET_WM_STATE_MAXIMIZED_HORZ", False));
 }
 
 // Detects the display's DPI scale. See file header for the Xft.dpi/
@@ -214,6 +245,23 @@ struct BuniumLinuxHandle {
   bool clipped = false;
   int clip_x = 0, clip_y = 0, clip_w = 0, clip_h = 0;
 };
+
+bool SendEwmhState(BuniumLinuxHandle* h, long action, Atom first,
+                   Atom second = None) {
+  Display* d = GetDisplay();
+  XEvent event = {};
+  event.xclient.type = ClientMessage;
+  event.xclient.window = h->window;
+  event.xclient.message_type = XInternAtom(d, "_NET_WM_STATE", False);
+  event.xclient.format = 32;
+  event.xclient.data.l[0] = action;  // remove=0, add=1
+  event.xclient.data.l[1] = static_cast<long>(first);
+  event.xclient.data.l[2] = static_cast<long>(second);
+  event.xclient.data.l[3] = 1;  // application request
+  return XSendEvent(d, DefaultRootWindow(d), False,
+                    SubstructureRedirectMask | SubstructureNotifyMask,
+                    &event) != 0;
+}
 
 std::vector<BuniumLinuxHandle*> g_all;
 
@@ -654,6 +702,7 @@ BUNIUM_LINUX_EXPORT void bunium_window_pump_events() {
       case ClientMessage:
         if (static_cast<Atom>(ev.xclient.data.l[0]) == g_wm_delete_window) {
           h->closed = true;
+          XDestroyWindow(d, h->window);
         }
         break;
       case ButtonPress:
@@ -737,14 +786,120 @@ BUNIUM_LINUX_EXPORT int bunium_window_is_closed(void* handle) {
   return h->closed ? 1 : 0;
 }
 
+BUNIUM_LINUX_EXPORT int bunium_window_control_capabilities(void* handle) {
+  auto* h = static_cast<BuniumLinuxHandle*>(handle);
+  Display* d = GetDisplay();
+  if (!h || !d || h->is_sublayer || h->closed) return 0;
+  int capabilities = (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5);
+  if (SupportsMaximize(d)) capabilities |= 1 << 1;
+  if (WindowManagerSupports(
+          d, XInternAtom(d, "_NET_WM_STATE_ABOVE", False)))
+    capabilities |= 1 << 6;
+  return capabilities;
+}
+
+BUNIUM_LINUX_EXPORT int bunium_window_minimize(void* handle) {
+  auto* h = static_cast<BuniumLinuxHandle*>(handle);
+  Display* d = GetDisplay();
+  if (!h || !d || h->is_sublayer || h->closed) return 0;
+  const int status = XIconifyWindow(d, h->window, DefaultScreen(d));
+  XFlush(d);
+  return status ? 1 : 0;
+}
+
+BUNIUM_LINUX_EXPORT int bunium_window_maximize(void* handle) {
+  auto* h = static_cast<BuniumLinuxHandle*>(handle);
+  Display* d = GetDisplay();
+  if (!h || !d || h->is_sublayer || h->closed || !SupportsMaximize(d))
+    return 0;
+  const Atom vertical = XInternAtom(d, "_NET_WM_STATE_MAXIMIZED_VERT", False);
+  const Atom horizontal = XInternAtom(d, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
+  XMapRaised(d, h->window);
+  const bool sent = SendEwmhState(h, 1, vertical, horizontal);
+  XFlush(d);
+  return sent ? 1 : 0;
+}
+
+BUNIUM_LINUX_EXPORT int bunium_window_restore(void* handle) {
+  auto* h = static_cast<BuniumLinuxHandle*>(handle);
+  Display* d = GetDisplay();
+  if (!h || !d || h->is_sublayer || h->closed) return 0;
+  if (SupportsMaximize(d)) {
+    const Atom vertical = XInternAtom(d, "_NET_WM_STATE_MAXIMIZED_VERT", False);
+    const Atom horizontal = XInternAtom(d, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
+    SendEwmhState(h, 0, vertical, horizontal);
+  }
+  XMapRaised(d, h->window);
+  XFlush(d);
+  return 1;
+}
+
+BUNIUM_LINUX_EXPORT int bunium_window_focus(void* handle) {
+  auto* h = static_cast<BuniumLinuxHandle*>(handle);
+  Display* d = GetDisplay();
+  if (!h || !d || h->is_sublayer || h->closed) return 0;
+  XMapRaised(d, h->window);
+  const Atom active = XInternAtom(d, "_NET_ACTIVE_WINDOW", False);
+  if (WindowManagerSupports(d, active)) {
+    XEvent event = {};
+    event.xclient.type = ClientMessage;
+    event.xclient.window = h->window;
+    event.xclient.message_type = active;
+    event.xclient.format = 32;
+    event.xclient.data.l[0] = 1;  // application request
+    event.xclient.data.l[1] = CurrentTime;
+    event.xclient.data.l[2] = None;
+    const int sent = XSendEvent(d, DefaultRootWindow(d), False,
+                                SubstructureRedirectMask | SubstructureNotifyMask,
+                                &event);
+    XFlush(d);
+    return sent ? 1 : 0;
+  }
+  XSetInputFocus(d, h->window, RevertToPointerRoot, CurrentTime);
+  XFlush(d);
+  return 1;
+}
+
+BUNIUM_LINUX_EXPORT int bunium_window_show(void* handle) {
+  auto* h = static_cast<BuniumLinuxHandle*>(handle);
+  Display* d = GetDisplay();
+  if (!h || !d || h->is_sublayer || h->closed) return 0;
+  XMapRaised(d, h->window);
+  XFlush(d);
+  return 1;
+}
+
+BUNIUM_LINUX_EXPORT int bunium_window_hide(void* handle) {
+  auto* h = static_cast<BuniumLinuxHandle*>(handle);
+  Display* d = GetDisplay();
+  if (!h || !d || h->is_sublayer || h->closed) return 0;
+  XUnmapWindow(d, h->window);
+  XFlush(d);
+  return 1;
+}
+
+BUNIUM_LINUX_EXPORT int bunium_window_set_always_on_top(void* handle,
+                                                        int enabled) {
+  auto* h = static_cast<BuniumLinuxHandle*>(handle);
+  Display* d = GetDisplay();
+  const Atom above = d ? XInternAtom(d, "_NET_WM_STATE_ABOVE", False) : None;
+  if (!h || !d || h->is_sublayer || h->closed ||
+      (enabled != 0 && enabled != 1) || !WindowManagerSupports(d, above))
+    return 0;
+  const bool sent = SendEwmhState(h, enabled ? 1 : 0, above);
+  XFlush(d);
+  return sent ? 1 : 0;
+}
+
 BUNIUM_LINUX_EXPORT void bunium_window_close(void* handle) {
   auto* h = static_cast<BuniumLinuxHandle*>(handle);
-  if (h->closed) return;
-  h->closed = true;
+  if (!h) return;
   Display* d = GetDisplay();
-  if (h->gc) XFreeGC(d, h->gc);
-  XDestroyWindow(d, h->window);
-  XFlush(d);
+  if (!h->closed && d) XDestroyWindow(d, h->window);
+  h->closed = true;
+  if (d && h->gc) XFreeGC(d, h->gc);
+  if (d) XFlush(d);
+  DeleteHandle(h);
 }
 
 BUNIUM_LINUX_EXPORT double bunium_window_get_scale(void* handle) {

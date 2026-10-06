@@ -139,7 +139,7 @@ cat > "$APP_BUNDLE/Contents/MacOS/$NAME" <<EOF
 # bunium packaged launcher -- see packaging/mac/package.sh for the layout.
 APP_ROOT="\$(cd "\$(dirname "\$0")/.." && pwd)"
 export BUNIUM_SHIM_PATH="\$APP_ROOT/Frameworks/bunium_shim.dylib"
-export BUNIUM_SUBPROCESS_PATH="\$APP_ROOT/Frameworks/bunium_subprocess"
+export BUNIUM_SUBPROCESS_PATH="\$APP_ROOT/Frameworks/bunium_subprocess.app/Contents/MacOS/bunium_subprocess"
 export BUNIUM_FRAMEWORK_DIR="\$APP_ROOT/Frameworks/Chromium Embedded Framework.framework"
 CACHE_ROOT="\$HOME/Library/Application Support/$NAME/CEF"
 mkdir -p "\$CACHE_ROOT"
@@ -189,53 +189,29 @@ mkdir -p "$resource_app/node_modules/bunium"
 rsync -a "$BUNIUM_REPO/src/" "$resource_app/node_modules/bunium/src/"
 cp "$BUNIUM_REPO/package.json" "$resource_app/node_modules/bunium/package.json"
 
-# --- macOS helper apps (Native CEF + Chromium, macOS, bundled apps) ---
-# When the main app is bundled, Chromium launches the renderer and the
-# notification-alerts utility through per-process-type helper .app bundles
-# that are SIBLINGS of the main app, named after the subprocess basename:
-#   Out/bunium_subprocess (Renderer).app/Contents/MacOS/bunium_subprocess (Renderer)
-#   Out/bunium_subprocess (Alerts).app/Contents/MacOS/bunium_subprocess (Alerts)
-# (This is the Google Chrome "Google Chrome Helper (Renderer).app"
-# convention; CEF names the helpers after its browser_subprocess_path
-# basename instead of the app name.) Missing helpers make posix_spawnp fail
-# with ENOENT, which Chromium reports only via a release-build no-op DLOG --
-# the renderer silently never starts and the navigation dies with
-# ERR_ABORTED. Other process types (gpu, network, storage, ...) are spawned
-# from the plain subprocess path directly.
-#
-# Each helper is a copy of the subprocess binary with its libcef install
-# name re-aimed at the MAIN app's framework (@loader_path-relative from
-# Contents/MacOS of the helper: up 3 levels = $OUT_DIR, then into the app).
-HELPER_TYPES="Renderer Alerts"
+# --- macOS CEF helper apps ---
+# CEF's sandbox bootstrap and dynamic framework loader require helper
+# executables inside Contents/Frameworks, three levels below the framework.
+HELPER_TYPES="base Renderer Alerts"
 for htype in $HELPER_TYPES; do
-  hbundle="$OUT_DIR/bunium_subprocess ($htype).app"
-  hbin="$hbundle/Contents/MacOS/bunium_subprocess ($htype)"
+  if [ "$htype" = "base" ]; then
+    hname="bunium_subprocess"
+    hbundle="$APP_BUNDLE/Contents/Frameworks/bunium_subprocess.app"
+  else
+    hname="bunium_subprocess ($htype)"
+    hbundle="$APP_BUNDLE/Contents/Frameworks/$hname.app"
+  fi
+  hbin="$hbundle/Contents/MacOS/$hname"
   rm -rf "$hbundle"
   mkdir -p "$(dirname "$hbin")"
-  cur="$(otool -L "$BUNIUM_REPO/native/build/bunium_subprocess" | awk '/Chromium Embedded Framework\.framework\/Chromium Embedded Framework/ { l=$0; sub(/^[ \t]+/, "", l); sub(/ \(compatibility.*/, "", l); print l; exit }')"
-  if [ -n "$cur" ]; then
-    target="@loader_path/../../../$NAME.app/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework"
-    echo "rewriting helper ($htype): $cur -> $target"
-    # install_name_tool/otool-classic can't open a file whose *final path
-    # component* contains spaces ("bunium_subprocess (Renderer)"), so
-    # rewrite a no-space temp copy and move it into the helper bundle --
-    # the rewritten install name is @loader_path-relative, so the file is
-    # location-independent.
-    tmpbin="$OUT_DIR/.helper-$htype-bin"
-    cp "$BUNIUM_REPO/native/build/bunium_subprocess" "$tmpbin"
-    install_name_tool -change "$cur" "$target" "$tmpbin"
-    mkdir -p "$(dirname "$hbin")"
-    mv "$tmpbin" "$hbin"
-  else
-    cp "$BUNIUM_REPO/native/build/bunium_subprocess" "$hbin"
-  fi
+  cp "$BUNIUM_REPO/native/build/bunium_subprocess" "$hbin"
   cat > "$hbundle/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>bunium_subprocess ($htype)</string>
-  <key>CFBundleExecutable</key><string>bunium_subprocess ($htype)</string>
+  <key>CFBundleName</key><string>$hname</string>
+  <key>CFBundleExecutable</key><string>$hname</string>
   <!-- MUST equal the main app's CFBundleIdentifier: the helper child
        self-derives its MachPortRendezvous lookup name from its own bundle
        id (Chromium does not pass the browser's base-bundle-id here), so a
@@ -280,12 +256,12 @@ if [ -n "$ICON" ]; then
 fi
 
 # Ad-hoc sign so the bundle runs locally (arm64 macOS requires signed code;
-# install_name_tool above invalidated the build-time signatures). The macOS
-# helper apps are siblings of the main bundle, so they are signed separately
-# (--deep on the main app does not reach them). Real distribution needs a
+# install_name_tool above invalidated the build-time signatures). Helper apps
+# are nested in Contents/Frameworks and signed separately before the main app.
+# Real distribution needs a
 # Developer ID + notarization: out of scope here (needs Apple credentials)
 # and documented as a follow-up in PLAN.md Phase 8.
-for hbundle in "$OUT_DIR"/bunium_subprocess\ \(*\)\.app; do
+for hbundle in "$APP_BUNDLE"/Contents/Frameworks/bunium_subprocess*.app; do
   if [ -d "$hbundle" ]; then
     codesign --force --deep --sign - "$hbundle"
   fi
@@ -299,22 +275,15 @@ otool -L "$APP_BUNDLE/Contents/Frameworks/bunium_shim.dylib" | grep "Chromium Em
 if [ "$MAKE_DMG" -eq 1 ]; then
   DMG="$OUT_DIR/$NAME.dmg"
   rm -f "$DMG"
-  # Stage everything the app needs at runtime: the main .app plus its
-  # sibling helper bundles (Chromium spawns the renderer/alerts helpers from
-  # right next to the main app), then burn the staging dir into the DMG.
+  # All CEF helpers are nested in the main app's Contents/Frameworks.
   DMG_STAGE="$OUT_DIR/.dmg-stage"
   rm -rf "$DMG_STAGE"
   mkdir -p "$DMG_STAGE"
   cp -R "$APP_BUNDLE" "$DMG_STAGE/"
-  for hbundle in "$OUT_DIR"/bunium_subprocess\ \(*\)\.app; do
-    if [ -d "$hbundle" ]; then
-      cp -R "$hbundle" "$DMG_STAGE/"
-    fi
-  done
   hdiutil create -volname "$NAME" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG" >/dev/null
   rm -rf "$DMG_STAGE"
   echo "dmg:   $DMG"
 fi
 echo "app:   $APP_BUNDLE ($(du -sh "$APP_BUNDLE" | awk '{print $1}'))"
 echo "helpers:"
-ls -1 "$OUT_DIR"/bunium_subprocess\ \(*\)\.app 2>/dev/null || true
+ls -1 "$APP_BUNDLE"/Contents/Frameworks/bunium_subprocess*.app 2>/dev/null || true

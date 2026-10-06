@@ -31,10 +31,14 @@ const win = new BuniumWindow({ url: "bunium://app/" });
 
 | Method | Signature | Notes |
 | ------ | --------- | ----- |
+| `createGuest(options)` | `(options: BuniumGuestOptions) => BuniumGuest` | Creates an untrusted guest view in this window. See [Guest views](/guide/guest). |
 | `loadURL(url)` | `(url: string) => void` | Navigate the window's view to a new URL. |
 | `resize(width, height)` | `(w, h) => void` | Programmatic resize (logical px). |
 | `captureScreenshot()` | `() => Screenshot` | Raw BGRA pixels of the latest frame at physical size. No PNG encoder bundled — pick your own image lib. |
 | `onClose(listener)` | `(cb: () => void) => void` | Fires on user close (red button) or `.close()`. |
+| `minimize()` / `maximize()` / `restore()` | `() => void` | Requests native window state changes. `maximize()` is unavailable for non-resizable windows. |
+| `focus()` / `show()` / `hide()` | `() => void` | Focus can be refused by the OS; `show()` does not request focus. |
+| `setAlwaysOnTop(enabled)` | `(enabled: boolean) => void` | Toggles floating level without intentionally activating the window. Default is false. |
 | `on(name, listener)` | renderer → main IPC | See [Typed IPC](/guide/ipc). |
 | `emit(name, payload)` | main → renderer IPC | See [Typed IPC](/guide/ipc). |
 | `close()` | `() => void` | Double-close is a safe no-op. |
@@ -48,6 +52,11 @@ const win = new BuniumWindow({ url: "bunium://app/" });
 - `devicePixelRatio` — the window's backing scale factor (2.0 on Retina).
 - `resizable` — whether the user can resize; `sizeConstraints` — current
   min/max content constraints.
+- `controlCapabilities` — per-window support for minimize/maximize/restore,
+  focus, show/hide and always-on-top. A missing capability throws
+  `WindowControlError` with `code === "unsupported"`; native failures and
+  calls after close have distinct error codes. X11 always-on-top/maximize
+  support depends on the running window manager's EWMH capabilities.
 
 ## Screenshot
 

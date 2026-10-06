@@ -132,6 +132,7 @@ jobs:
           pkill -KILL -f "BuniumFixture" 2>/dev/null || true
 
           cat pack-verify.log
+          grep -q "TRUSTED_ORIGIN_VERIFY:PASS" pack-verify.log
           grep -q "PACKAGED_APP_VERIFY:PASS" pack-verify.log
 
       - name: Upload logs

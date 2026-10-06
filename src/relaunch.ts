@@ -18,11 +18,26 @@
 import { app } from "./app";
 
 export interface RelaunchOptions {
+  /** Installed app-tree path associated with this update. The restarted
+   *  process receives it as BUNIUM_UPDATE_INSTALL_DIR so it can begin and
+   *  acknowledge the launch health check. */
+  installDir?: string;
   /** Replaces `process.argv.slice(1)` when provided (same shape: script
    *  path first, then any args the app was launched with). */
   args?: string[];
   /** Poll interval for the parent-exit wait, ms. Default 200. */
   pollIntervalMs?: number;
+}
+
+/** Builds the inherited environment for the restarted process without
+ * mutating the current process environment. */
+export function buildRelaunchEnv(
+  installDir: string | undefined,
+  baseEnv: typeof process.env = process.env,
+): typeof process.env {
+  return installDir
+    ? { ...baseEnv, BUNIUM_UPDATE_INSTALL_DIR: installDir }
+    : { ...baseEnv };
 }
 
 /**
@@ -100,7 +115,11 @@ export function relaunchApp(options: RelaunchOptions = {}): void {
       [process.execPath, ...argv],
       options.pollIntervalMs ?? 200,
     ),
-    { detached: true, stdio: ["inherit", "inherit", "inherit"] as const },
+    {
+      detached: true,
+      env: buildRelaunchEnv(options.installDir),
+      stdio: ["inherit", "inherit", "inherit"] as const,
+    },
   );
   child.unref?.();
   process.exit(0);

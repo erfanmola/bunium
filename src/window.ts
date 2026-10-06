@@ -1,10 +1,19 @@
 import { CString, type Pointer, ptr, toArrayBuffer } from "bun:ffi";
 import type { TrackedWindow } from "./app";
 import { app } from "./app";
+import { BuniumGuest, type BuniumGuestOptions } from "./guest";
 import { asPointer, cstr, lib } from "./native";
+import type { BuniumSession } from "./session";
 
 export interface BuniumWindowOptions {
   url: string;
+  /** Exact origins allowed to receive Bunium's native host bridge. Defaults to none. */
+  trustedOrigins?: string[];
+  /**
+   * Isolated storage partition for this window's page. Defaults to the
+   * shared global context. The window holds its own reference until close.
+   */
+  session?: BuniumSession;
   width?: number;
   height?: number;
   title?: string;
@@ -38,6 +47,10 @@ export interface BuniumWindowOptions {
    */
   trafficLightPosition?: { x: number; y: number };
 }
+
+/** Native capability version for consumers that require origin-bound IPC. */
+export const trustedOriginsApiVersion =
+  lib.symbols.bunium_trusted_origins_api_version();
 
 // Reserved message name for the automatic draggable-region scanner injected
 // into every page (see BuniumApp::OnContextCreated, bunium_common.h) --
@@ -118,7 +131,10 @@ interface TrackedWebview {
 class WebviewManager {
   private webviews = new Map<string, TrackedWebview>();
 
-  constructor(private readonly windowHandle: Pointer) {}
+  constructor(
+    private readonly windowHandle: Pointer,
+    private readonly onLayerOrderChanged: () => void,
+  ) {}
 
   create(payload: WebviewCreatePayload): void {
     if (this.webviews.has(payload.id)) return; // shouldn't happen, defensive
@@ -141,6 +157,7 @@ class WebviewManager {
     );
     lib.symbols.bunium_attach_window(viewHandle, sublayerHandle);
     this.webviews.set(payload.id, { sublayerHandle, viewHandle });
+    this.onLayerOrderChanged();
   }
 
   updateBounds(payload: WebviewBoundsPayload): void {
@@ -203,6 +220,7 @@ class WebviewManager {
         tracked.sublayerHandle,
       );
     }
+    this.onLayerOrderChanged();
   }
   destroy(payload: WebviewDestroyPayload): void {
     const tracked = this.webviews.get(payload.id);
@@ -227,6 +245,58 @@ class WebviewManager {
 export interface Size {
   width: number;
   height: number;
+}
+
+export interface WindowControlCapabilities {
+  minimize: boolean;
+  maximize: boolean;
+  restore: boolean;
+  focus: boolean;
+  show: boolean;
+  hide: boolean;
+  alwaysOnTop: boolean;
+}
+
+export type WindowControl = keyof WindowControlCapabilities;
+
+export class WindowControlError extends Error {
+  constructor(
+    readonly control: WindowControl,
+    readonly code: "unsupported" | "failed" | "closed",
+  ) {
+    super(
+      code === "unsupported"
+        ? `bunium: window control '${control}' is unavailable on this window`
+        : code === "closed"
+          ? `bunium: cannot use window control '${control}' after close`
+          : `bunium: native window control '${control}' failed`,
+    );
+    this.name = "WindowControlError";
+  }
+}
+
+const WINDOW_CONTROL_BITS: Record<WindowControl, number> = {
+  minimize: 1 << 0,
+  maximize: 1 << 1,
+  restore: 1 << 2,
+  focus: 1 << 3,
+  show: 1 << 4,
+  hide: 1 << 5,
+  alwaysOnTop: 1 << 6,
+};
+
+function decodeWindowControlCapabilities(
+  mask: number,
+): WindowControlCapabilities {
+  return {
+    minimize: (mask & WINDOW_CONTROL_BITS.minimize) !== 0,
+    maximize: (mask & WINDOW_CONTROL_BITS.maximize) !== 0,
+    restore: (mask & WINDOW_CONTROL_BITS.restore) !== 0,
+    focus: (mask & WINDOW_CONTROL_BITS.focus) !== 0,
+    show: (mask & WINDOW_CONTROL_BITS.show) !== 0,
+    hide: (mask & WINDOW_CONTROL_BITS.hide) !== 0,
+    alwaysOnTop: (mask & WINDOW_CONTROL_BITS.alwaysOnTop) !== 0,
+  };
 }
 
 export interface Screenshot {
@@ -260,6 +330,295 @@ export type BuniumMessageMap = Record<string, any>;
 
 type MessageListener<T> = (payload: T) => void;
 
+function encodeTrustedOrigins(origins: string[] | undefined): string {
+  const values = origins ?? [];
+  for (const origin of values) {
+    if (origin.includes("\n") || origin.includes("\r")) {
+      throw new TypeError("trustedOrigins entries must be single-line origins");
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      throw new TypeError(`Invalid trusted origin: ${origin}`);
+    }
+    const canonical =
+      parsed.protocol === "bunium:" ? `bunium://${parsed.host}` : parsed.origin;
+    if (
+      !canonical ||
+      canonical === "null" ||
+      (origin !== canonical && origin !== `${canonical}/`) ||
+      parsed.username ||
+      parsed.password ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      throw new TypeError(
+        `trustedOrigins entry must be an exact origin: ${origin}`,
+      );
+    }
+  }
+  return values.join("\n");
+}
+
+function canonicalOrigin(input: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(input);
+  } catch {
+    throw new TypeError(`Invalid overlay URL: ${input}`);
+  }
+  if (parsed.username || parsed.password) {
+    throw new TypeError("bunium: overlay URLs cannot contain credentials");
+  }
+  return parsed.protocol === "bunium:"
+    ? `bunium://${parsed.host}`
+    : parsed.origin;
+}
+
+function checkedBounds(bounds: OverlayBounds): OverlayBounds {
+  for (const [name, value] of Object.entries({
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+  })) {
+    if (!Number.isSafeInteger(value)) {
+      throw new TypeError(`overlay ${name} must be a safe integer`);
+    }
+  }
+  if (bounds.width < 1 || bounds.height < 1) {
+    throw new RangeError("overlay width and height must be positive");
+  }
+  return { ...bounds };
+}
+
+export interface OverlayBounds {
+  /** Window-local logical (CSS) pixels. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface BuniumOverlayOptions extends OverlayBounds {
+  url: string;
+}
+
+/** A trusted, transparent CEF surface composited above the window's guests. */
+export class BuniumOverlay<M extends BuniumMessageMap = BuniumMessageMap> {
+  private readonly viewHandle: Pointer;
+  private readonly sublayerHandle: Pointer;
+  private readonly session: BuniumSession | undefined;
+  private readonly messageListeners = new Map<
+    string,
+    Set<MessageListener<unknown>>
+  >();
+  private currentBounds: OverlayBounds;
+  private disposed = false;
+
+  constructor(
+    private readonly owner: BuniumWindow,
+    options: BuniumOverlayOptions,
+    trustedOrigins: readonly string[],
+    session: BuniumSession | undefined,
+    private readonly onDispose: (overlay: BuniumOverlay) => void,
+    private readonly onLayerOrderChanged: () => void,
+  ) {
+    if (process.platform !== "darwin") {
+      throw new Error(
+        "bunium: transparent trusted overlays are currently macOS-only",
+      );
+    }
+    if (owner.isClosed) throw new Error("bunium: window is closed");
+    const bounds = checkedBounds(options);
+    const origin = canonicalOrigin(options.url);
+    if (
+      !owner.allowsTrustedOrigin(origin) ||
+      !trustedOrigins.includes(origin)
+    ) {
+      throw new TypeError(
+        "bunium: overlay URL origin must be in the window trustedOrigins allowlist",
+      );
+    }
+    if (trustedOrigins.length === 0) {
+      throw new TypeError(
+        "bunium: trusted overlays require a non-empty trustedOrigins allowlist",
+      );
+    }
+
+    this.currentBounds = bounds;
+    this.session = session?.retain();
+    let sublayer: Pointer | null = null;
+    let view: Pointer | null = null;
+    try {
+      const sublayerResult = lib.symbols.bunium_create_native_sublayer(
+        owner.windowHandle,
+        bounds.x,
+        bounds.y,
+        bounds.width,
+        bounds.height,
+      );
+      if (!sublayerResult)
+        throw new Error("bunium: could not create overlay sublayer");
+      sublayer = asPointer(sublayerResult);
+      const viewResult = lib.symbols.bunium_create_trusted_view(
+        cstr(options.url),
+        bounds.width,
+        bounds.height,
+        1,
+        cstr(trustedOrigins.join("\n")),
+        this.session ? this.session.nativeHandle : null,
+      );
+      if (!viewResult)
+        throw new Error("bunium: could not create trusted overlay view");
+      view = asPointer(viewResult);
+      lib.symbols.bunium_attach_window(view, sublayer);
+      this.sublayerHandle = sublayer;
+      this.viewHandle = view;
+    } catch (error) {
+      if (view) lib.symbols.bunium_close_view(view);
+      if (sublayer) lib.symbols.bunium_close_native_sublayer(sublayer);
+      this.session?.release();
+      throw error;
+    }
+  }
+
+  get bounds(): OverlayBounds {
+    return { ...this.currentBounds };
+  }
+
+  setBounds(bounds: OverlayBounds): void {
+    this.assertActive();
+    const next = checkedBounds(bounds);
+    lib.symbols.bunium_set_native_sublayer_frame(
+      this.sublayerHandle,
+      next.x,
+      next.y,
+      next.width,
+      next.height,
+    );
+    lib.symbols.bunium_resize(this.viewHandle, next.width, next.height);
+    this.currentBounds = next;
+  }
+
+  /** Applies a rectangular window-local clip, including hit-test fall-through. */
+  setClip(bounds: OverlayBounds): void {
+    this.assertActive();
+    const clip = checkedBounds(bounds);
+    lib.symbols.bunium_set_native_sublayer_clip(
+      this.sublayerHandle,
+      clip.x,
+      clip.y,
+      clip.width,
+      clip.height,
+    );
+    this.onLayerOrderChanged();
+  }
+
+  clearClip(): void {
+    this.assertActive();
+    lib.symbols.bunium_clear_native_sublayer_clip(this.sublayerHandle);
+    this.onLayerOrderChanged();
+  }
+
+  /** Navigate only within the window's exact trusted-origin set. */
+  navigate(url: string): void {
+    this.assertActive();
+    if (!this.owner.allowsTrustedOrigin(canonicalOrigin(url))) {
+      throw new TypeError(
+        "bunium: overlay navigation must stay within trustedOrigins",
+      );
+    }
+    lib.symbols.bunium_navigate(this.viewHandle, cstr(url));
+  }
+
+  on<K extends keyof M & string>(
+    name: K,
+    listener: MessageListener<M[K]>,
+  ): void {
+    this.assertActive();
+    let set = this.messageListeners.get(name);
+    if (!set) {
+      set = new Set();
+      this.messageListeners.set(name, set);
+    }
+    set.add(listener as MessageListener<unknown>);
+  }
+
+  off<K extends keyof M & string>(
+    name: K,
+    listener: MessageListener<M[K]>,
+  ): void {
+    this.messageListeners
+      .get(name)
+      ?.delete(listener as MessageListener<unknown>);
+  }
+
+  emit<K extends keyof M & string>(name: K, payload: M[K]): void {
+    this.assertActive();
+    lib.symbols.bunium_emit_to_renderer(
+      this.viewHandle,
+      cstr(name),
+      cstr(JSON.stringify(payload)),
+    );
+  }
+
+  /** @internal Drained by the owning window's existing CEF pump. */
+  pollMessages(): void {
+    if (this.disposed) return;
+    for (;;) {
+      const envelopePtr = lib.symbols.bunium_poll_message(this.viewHandle);
+      if (envelopePtr === null) break;
+      let envelope: { name?: unknown; payload?: unknown };
+      try {
+        envelope = JSON.parse(new CString(envelopePtr).toString());
+      } catch {
+        continue;
+      }
+      if (
+        typeof envelope.name !== "string" ||
+        typeof envelope.payload !== "string"
+      )
+        continue;
+      const listeners = this.messageListeners.get(envelope.name);
+      if (!listeners?.size) continue;
+      let payload: unknown;
+      try {
+        payload = JSON.parse(envelope.payload);
+      } catch {
+        continue;
+      }
+      for (const listener of listeners) listener(payload);
+    }
+  }
+
+  /** @internal */
+  raise(): void {
+    if (!this.disposed) {
+      lib.symbols.bunium_raise_native_sublayer(
+        this.owner.windowHandle,
+        this.sublayerHandle,
+      );
+    }
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.onDispose(this);
+    lib.symbols.bunium_close_view(this.viewHandle);
+    lib.symbols.bunium_close_native_sublayer(this.sublayerHandle);
+    this.session?.release();
+    this.messageListeners.clear();
+  }
+
+  private assertActive(): void {
+    if (this.disposed || this.owner.isClosed)
+      throw new Error("bunium: overlay is disposed");
+  }
+}
+
 // First public API surface of the framework. Deliberately thin -- it wraps
 // the native handles from bunium_shim's flat C ABI, nothing more yet. No
 // close callback yet.
@@ -276,10 +635,22 @@ export class BuniumWindow<M extends BuniumMessageMap = BuniumMessageMap>
   // distinct once devicePixelRatio != 1. See .innerSize / .renderedSize.
   private logicalWidth: number;
   private logicalHeight: number;
+  private readonly transparentBackground: boolean;
   private webviews: WebviewManager;
+  private readonly session: BuniumSession | undefined;
+  private readonly guests = new Set<BuniumGuest>();
+  private readonly overlays = new Set<BuniumOverlay>();
+  private readonly trustedOrigins: ReadonlySet<string>;
 
   constructor(options: BuniumWindowOptions) {
     app.init();
+    const encodedTrustedOrigins = encodeTrustedOrigins(options.trustedOrigins);
+    this.trustedOrigins = new Set(
+      (options.trustedOrigins ?? []).map(canonicalOrigin),
+    );
+    // Retain before creating the view so a caller releasing its own
+    // reference immediately afterwards can't drop the context mid-create.
+    this.session = options.session?.retain();
 
     const width = options.width ?? 800;
     const height = options.height ?? 600;
@@ -287,6 +658,7 @@ export class BuniumWindow<M extends BuniumMessageMap = BuniumMessageMap>
     this.logicalHeight = height;
 
     const transparent = options.transparent ?? false;
+    this.transparentBackground = transparent;
     const frame = options.frame ?? true;
     const resizable = options.resizable ?? true;
 
@@ -332,21 +704,91 @@ export class BuniumWindow<M extends BuniumMessageMap = BuniumMessageMap>
     }
 
     this.viewHandle = asPointer(
-      lib.symbols.bunium_create_view(
+      lib.symbols.bunium_create_trusted_view(
         cstr(options.url),
         width,
         height,
         transparent ? 1 : 0,
+        cstr(encodedTrustedOrigins),
+        this.session ? this.session.nativeHandle : null,
       )!,
     );
 
     lib.symbols.bunium_attach_window(this.viewHandle, this.windowHandle);
-    this.webviews = new WebviewManager(this.windowHandle);
+    this.webviews = new WebviewManager(this.windowHandle, () =>
+      this.raiseOverlays(),
+    );
     app.registerWindow(this);
   }
 
   get frameCount(): bigint {
     return lib.symbols.bunium_frame_count(this.viewHandle);
+  }
+
+  /** Native operations this specific window and display currently support. */
+  get controlCapabilities(): WindowControlCapabilities {
+    if (this.closed) {
+      return decodeWindowControlCapabilities(0);
+    }
+    return decodeWindowControlCapabilities(
+      lib.symbols.bunium_window_control_capabilities(this.windowHandle),
+    );
+  }
+
+  minimize(): void {
+    this.runWindowControl("minimize", () =>
+      lib.symbols.bunium_window_minimize(this.windowHandle),
+    );
+  }
+
+  maximize(): void {
+    this.runWindowControl("maximize", () =>
+      lib.symbols.bunium_window_maximize(this.windowHandle),
+    );
+  }
+
+  restore(): void {
+    this.runWindowControl("restore", () =>
+      lib.symbols.bunium_window_restore(this.windowHandle),
+    );
+  }
+
+  focus(): void {
+    this.runWindowControl("focus", () =>
+      lib.symbols.bunium_window_focus(this.windowHandle),
+    );
+  }
+
+  show(): void {
+    this.runWindowControl("show", () =>
+      lib.symbols.bunium_window_show(this.windowHandle),
+    );
+  }
+
+  hide(): void {
+    this.runWindowControl("hide", () =>
+      lib.symbols.bunium_window_hide(this.windowHandle),
+    );
+  }
+
+  setAlwaysOnTop(enabled: boolean): void {
+    if (typeof enabled !== "boolean") {
+      throw new TypeError("bunium: always-on-top must be a boolean");
+    }
+    this.runWindowControl("alwaysOnTop", () =>
+      lib.symbols.bunium_window_set_always_on_top(
+        this.windowHandle,
+        enabled ? 1 : 0,
+      ),
+    );
+  }
+
+  private runWindowControl(control: WindowControl, invoke: () => number): void {
+    if (this.closed) throw new WindowControlError(control, "closed");
+    if (!this.controlCapabilities[control]) {
+      throw new WindowControlError(control, "unsupported");
+    }
+    if (invoke() !== 1) throw new WindowControlError(control, "failed");
   }
 
   loadURL(url: string): void {
@@ -362,6 +804,11 @@ export class BuniumWindow<M extends BuniumMessageMap = BuniumMessageMap>
   /** The logical (CSS px) size passed to the constructor / .resize(). */
   get innerSize(): Size {
     return { width: this.logicalWidth, height: this.logicalHeight };
+  }
+
+  /** Whether the native host and its CEF background were created transparent. */
+  get transparent(): boolean {
+    return this.transparentBackground;
   }
 
   /**
@@ -493,10 +940,66 @@ export class BuniumWindow<M extends BuniumMessageMap = BuniumMessageMap>
     );
   }
 
+  /**
+   * Composites an untrusted guest page (see BuniumGuest) into this window
+   * at window-relative bounds. Disposed automatically when the window
+   * closes.
+   */
+  createGuest(options: BuniumGuestOptions): BuniumGuest {
+    if (this.closed) throw new Error("bunium: window is closed");
+    const guest = new BuniumGuest(
+      this,
+      options,
+      (disposed) => this.guests.delete(disposed),
+      () => this.raiseOverlays(),
+    );
+    this.guests.add(guest);
+    this.raiseOverlays();
+    return guest;
+  }
+
+  /**
+   * Create a transparent trusted CEF surface above native guests. The URL
+   * must use an origin already listed in this window's trustedOrigins.
+   * Bounds are window-local logical pixels; transparent pixels inside the
+   * rectangle still receive pointer input, so keep it to the visible chrome.
+   * Supported on macOS only until Windows/Linux alpha composition is qualified.
+   */
+  createOverlay(options: BuniumOverlayOptions): BuniumOverlay {
+    if (this.closed) throw new Error("bunium: window is closed");
+    const overlay = new BuniumOverlay(
+      this,
+      options,
+      [...this.trustedOrigins],
+      this.session,
+      (disposed) => this.overlays.delete(disposed),
+      () => this.raiseOverlays(),
+    );
+    this.overlays.add(overlay);
+    this.raiseOverlays();
+    return overlay;
+  }
+
+  /** @internal */
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  /** @internal */
+  allowsTrustedOrigin(origin: string): boolean {
+    return this.trustedOrigins.has(origin);
+  }
+
+  private raiseOverlays(): void {
+    for (const overlay of this.overlays) overlay.raise();
+  }
+
   // Called by BuniumApp's pump loop every tick -- drains the native inbox
   // and dispatches to whatever listeners .on() registered for each message
   // name. Not meant to be called directly.
   pollMessages(): void {
+    for (const guest of this.guests) guest.pollMessages();
+    for (const overlay of this.overlays) overlay.pollMessages();
     for (;;) {
       const envelopePtr = lib.symbols.bunium_poll_message(this.viewHandle);
       if (envelopePtr === null) break;
@@ -588,8 +1091,12 @@ export class BuniumWindow<M extends BuniumMessageMap = BuniumMessageMap>
     if (this.closed) return;
     this.closed = true;
     app.unregisterWindow(this);
+    for (const overlay of [...this.overlays]) overlay.dispose();
+    for (const guest of [...this.guests]) guest.dispose();
     this.webviews.destroyAll();
     lib.symbols.bunium_close_view(this.viewHandle);
+    lib.symbols.bunium_close_native_window(this.windowHandle);
+    this.session?.release();
     for (const listener of this.closeListeners) listener();
   }
 
@@ -597,9 +1104,12 @@ export class BuniumWindow<M extends BuniumMessageMap = BuniumMessageMap>
     if (this.closed) return;
     this.closed = true;
     app.unregisterWindow(this);
+    for (const overlay of [...this.overlays]) overlay.dispose();
+    for (const guest of [...this.guests]) guest.dispose();
     this.webviews.destroyAll();
     lib.symbols.bunium_close_view(this.viewHandle);
     lib.symbols.bunium_close_native_window(this.windowHandle);
+    this.session?.release();
     for (const listener of this.closeListeners) listener();
   }
 }

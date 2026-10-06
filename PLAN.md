@@ -189,10 +189,10 @@ This is where the shim graduates from POC code to library code.
       2x layer. New public API: `BuniumWindow.innerSize` (logical), `.renderedSize` (physical),
       `.devicePixelRatio`, `.captureScreenshot()` (raw BGRA, no bundled PNG encoder — intentional,
       keep the framework lean and let consumers pick an image lib).
-      **Explicitly scoped out for now, tracked as future work:** DPR override (rendering at a
-      different scale than the display, e.g. for a fixed-resolution screenshot), and video
-      recording (would sequence `captureScreenshot()`'s same buffer-read primitive over time — no
-      encoding pipeline built).
+      DPR override (rendering at a different scale than the display) was later implemented for
+      untrusted Guests as the bounded 01d device-emulation API; it remains unqualified at host
+      DPR 1 and on Windows/Linux x64. Video recording remains future work (would sequence
+      `captureScreenshot()`'s same buffer-read primitive over time — no encoding pipeline built).
 - [x] **Found and fixed a real, separate bug while testing the above — root cause confirmed:
       yabai.** Freshly-created resizable windows were observed getting resized by something
       _outside_ bunium's own code (confirmed via a bare Cocoa window with zero CEF involvement,

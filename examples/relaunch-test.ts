@@ -15,7 +15,7 @@
 // Exit codes: 0 = PASS, 1 = FAIL. No CEF, so headless-safe; matches
 // bsdiff-test.ts / update-e2e-test.ts.
 
-import { buildRelaunchCommand } from "../src/relaunch";
+import { buildRelaunchCommand, buildRelaunchEnv } from "../src/relaunch";
 
 let failures = 0;
 
@@ -27,6 +27,15 @@ function check(cond: boolean, label: string): void {
     failures++;
   }
 }
+
+const sourceEnv = { KEEP_ME: "value" } as typeof process.env;
+const relaunchEnv = buildRelaunchEnv("/tmp/app-tree", sourceEnv);
+check(
+  relaunchEnv.BUNIUM_UPDATE_INSTALL_DIR === "/tmp/app-tree" &&
+    relaunchEnv.KEEP_ME === "value" &&
+    sourceEnv.BUNIUM_UPDATE_INSTALL_DIR === undefined,
+  "health-check install path is passed without mutating parent environment",
+);
 
 /** Runs the command with captured stdout; resolves text when it finishes. */
 async function run(

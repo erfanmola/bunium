@@ -25,6 +25,7 @@ import {
   readFile,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -133,7 +134,7 @@ for (const [i, c] of cases.entries()) {
   const installDir = join(dir, "app");
   const backup = `${installDir}.backup`;
   const journal = `${installDir}.updating`;
-  const staging = join(dir, "staging");
+  const staging = join(dir, `.app-staging-${i}`);
   await mkdir(dir, { recursive: true });
 
   if (c.install !== null) {
@@ -172,6 +173,57 @@ for (const [i, c] of cases.entries()) {
   check(!backupLeft, `${c.label}: backup cleaned up`);
   const journalLeft = await exists(journal);
   check(!journalLeft, `${c.label}: journal cleaned up`);
+}
+
+// The journal is local mutable state, so never trust its staging path. It
+// must not be able to replace the install with an arbitrary outside folder.
+{
+  const dir = join(base, "case-untrusted-staging-path");
+  const installDir = join(dir, "app");
+  const outside = join(dir, "outside");
+  await mkdir(installDir, { recursive: true });
+  await mkdir(outside, { recursive: true });
+  await writeFile(join(installDir, "app.js"), "OLD\n");
+  await writeFile(join(outside, "sentinel"), "KEEP\n");
+  await writeFile(
+    `${installDir}.updating`,
+    `${JSON.stringify({ staging: outside })}\n`,
+  );
+  const result = await repairInterruptedUpdate(installDir);
+  check(result === "none", "untrusted outside staging path ignored");
+  check(
+    (await marker(join(installDir, "app.js"))) === "OLD\n",
+    "untrusted outside staging path preserves install",
+  );
+  check(
+    (await marker(join(outside, "sentinel"))) === "KEEP\n",
+    "untrusted outside staging path preserves sentinel",
+  );
+}
+
+// A staging symlink with an otherwise plausible sibling name is not a real
+// staging tree and must not be promoted either.
+{
+  const dir = join(base, "case-staging-symlink");
+  const installDir = join(dir, "app");
+  const outside = join(dir, "outside");
+  const fakeStaging = join(dir, ".app-staging-fake");
+  await mkdir(installDir, { recursive: true });
+  await mkdir(outside, { recursive: true });
+  await writeFile(join(installDir, "app.js"), "OLD\n");
+  await writeFile(join(outside, "sentinel"), "KEEP\n");
+  await symlink(outside, fakeStaging);
+  await writeFile(
+    `${installDir}.updating`,
+    `${JSON.stringify({ staging: fakeStaging })}\n`,
+  );
+  const result = await repairInterruptedUpdate(installDir);
+  check(result === "none", "staging symlink ignored");
+  check(
+    (await marker(join(installDir, "app.js"))) === "OLD\n" &&
+      (await marker(join(outside, "sentinel"))) === "KEEP\n",
+    "staging symlink cannot replace the install",
+  );
 }
 
 await rm(base, { recursive: true, force: true });

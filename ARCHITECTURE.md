@@ -242,9 +242,11 @@ logical width/height unchanged — CEF internally produces an `OnPaint` buffer s
 logical window produces an exact 800×600 physical buffer on this 2x-scale machine, reproduced
 twice.
 
-**Not implemented:** an explicit DPR override (rendering at a scale different from the actual
-display — e.g. capturing a screenshot at a fixed resolution regardless of the display it's on).
-Currently the scale is always auto-detected from the window and can't be overridden per-view.
+**Superseded by card 01d:** untrusted Guests now accept a bounded per-view screen/DPR descriptor;
+touch-point count and pointer/hover media traits are also applied through the Guest's own CEF
+DevTools target. The feature is proven on macOS arm64 at physical host DPR 2, not yet at host DPR
+1 or on Windows/Linux x64. Real touchscreen event fidelity is not established by the browser
+property/media-query fixture. Trusted primary views continue to use the native window scale.
 
 ## 14. Root cause confirmed: yabai (tiling window manager), not a bunium or environment bug
 

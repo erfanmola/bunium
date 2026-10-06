@@ -1,10 +1,30 @@
 export { app } from "./app";
+export type { DeviceEmulationDescriptor } from "./emulation";
+export {
+  deviceEmulationCapabilities,
+  validateDeviceEmulation,
+} from "./emulation";
+export type {
+  BuniumGuestOptions,
+  GuestBounds,
+  GuestClip,
+  GuestEvent,
+  GuestGeolocation,
+  GuestMessage,
+} from "./guest";
+export { BuniumGuest, debugLiveCounts, guestApiVersion } from "./guest";
 export type { RelaunchOptions } from "./relaunch";
 // Phase 9: auto-update + packaged-app restart. The updater is exported so a
 // packaged app can do `import { updater } from "bunium"` rather than reaching
 // into the package internals (the same standing-requirement pattern as all
 // other public API: fully typed, no `any`).
 export { buildRelaunchCommand, relaunchApp } from "./relaunch";
+export type { PartitionClearResult } from "./session";
+export {
+  BuniumSession,
+  PartitionInUseError,
+  sessionApiVersion,
+} from "./session";
 export type {
   MenuItemSpec,
   MessageBoxOptions,
@@ -26,10 +46,15 @@ export {
   Tray,
 } from "./system";
 export type {
+  ApplicationTreeManifest,
   Arch,
   Platform,
+  RuntimeInstallerFormat,
+  RuntimeInstallerManifest,
+  RuntimeInstallerUpdate,
   UpdateCheckOptions,
   UpdateCheckResult,
+  UpdateHealthCheckResult,
   UpdateInfo,
   UpdateManifest,
   UpdateRepairResult,
@@ -37,11 +62,25 @@ export type {
   UpdaterEvents,
 } from "./update";
 export {
+  acknowledgeUpdateHealthy,
+  beginUpdateHealthCheck,
   defaultArch,
   defaultPlatform,
   repairInterruptedUpdate,
   Updater,
+  updateAbiVersion,
   updater,
 } from "./update";
-export type { BuniumWindowOptions } from "./window";
-export { BuniumWindow } from "./window";
+export type {
+  BuniumOverlayOptions,
+  BuniumWindowOptions,
+  OverlayBounds,
+  WindowControl,
+  WindowControlCapabilities,
+} from "./window";
+export {
+  BuniumOverlay,
+  BuniumWindow,
+  trustedOriginsApiVersion,
+  WindowControlError,
+} from "./window";

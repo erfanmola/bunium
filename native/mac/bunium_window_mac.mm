@@ -143,6 +143,7 @@ struct BuniumWindowHandle {
   CALayer* hostLayer = nil;
   CALayer* clipLayer = nil;
   CGRect absFrame = CGRectZero;
+  CGFloat clipCornerRadius = 0;
   // NSWindow.delegate is `weak` -- ARC won't keep our delegate alive on its
   // own. Hold a manual +1 (via CFBridgingRetain) and release it in
   // bunium_window_close. `void*` because ARC forbids ownership-qualified
@@ -345,6 +346,13 @@ bunium_window_create(int width, int height, const char* title,
       fprintf(stderr, "[startup-diag] t=%lld us stage=nsapplication_shared_done\n",
               (long long)BuniumWindowNowUs());
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    // The external event loop does not call NSApplication.run, which normally
+    // completes AppKit startup and registers application accessibility.
+    static bool applicationLaunched = false;
+    if (!applicationLaunched) {
+      [NSApp finishLaunching];
+      applicationLaunched = true;
+    }
 
     // frame_enabled=false -> Borderless (Electron's frame:false equivalent:
     // no title bar, no traffic-light buttons). Resizable starts on here --
@@ -408,18 +416,11 @@ bunium_window_create(int width, int height, const char* title,
     window.contentView = contentView;
     [window setAcceptsMouseMovedEvents:YES];
 
-    // Without this, macOS's own window management (Stage Manager /
-    // automatic tiling on recent macOS versions) was observed resizing a
-    // freshly-created resizable+titled window on its own a few hundred ms
-    // after creation, with no resize call from us -- confirmed via a bare
-    // window with no CEF view attached at all, so definitely not a bunium
-    // bug, but still something bunium needs to defend against since a
-    // silently-resized window breaks the "inner size == what you asked
-    // for" contract. FullScreenNone/FullScreenAuxiliary opt out of both
-    // Spaces-fullscreen and Stage-Manager-style auto-tiling participation.
-    window.collectionBehavior =
-        NSWindowCollectionBehaviorFullScreenNone |
-        NSWindowCollectionBehaviorFullScreenAuxiliary;
+    // Keep ordinary windows out of macOS Spaces fullscreen. FullScreenNone,
+    // FullScreenPrimary and FullScreenAuxiliary are mutually exclusive; the
+    // latter is a separate Stage Manager behavior for utility windows and is
+    // not a tiling-manager opt-out. Yabai floating policy is user-configured.
+    window.collectionBehavior = NSWindowCollectionBehaviorFullScreenNone;
 
     [window makeKeyAndOrderFront:nil];
     [window makeFirstResponder:contentView];
@@ -624,6 +625,97 @@ extern "C" __attribute__((visibility("default"))) int bunium_window_is_closed(
   return h->closed_by_user.load() ? 1 : 0;
 }
 
+extern "C" __attribute__((visibility("default"))) int
+bunium_window_control_capabilities(void* handle) {
+  auto* h = static_cast<BuniumWindowHandle*>(handle);
+  if (!h || !h->window || h->closed_by_user.load()) return 0;
+  int capabilities = (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) |
+                     (1 << 6);
+  if (h->window.styleMask & NSWindowStyleMaskResizable) capabilities |= 1 << 1;
+  return capabilities;
+}
+
+extern "C" __attribute__((visibility("default"))) int
+bunium_window_minimize(void* handle) {
+  @autoreleasepool {
+    auto* h = static_cast<BuniumWindowHandle*>(handle);
+    if (!h || !h->window || h->closed_by_user.load()) return 0;
+    if (!h->window.miniaturized) [h->window miniaturize:nil];
+    return 1;
+  }
+}
+
+extern "C" __attribute__((visibility("default"))) int
+bunium_window_maximize(void* handle) {
+  @autoreleasepool {
+    auto* h = static_cast<BuniumWindowHandle*>(handle);
+    if (!h || !h->window || h->closed_by_user.load() ||
+        !(h->window.styleMask & NSWindowStyleMaskResizable)) return 0;
+    if (h->window.miniaturized) [h->window deminiaturize:nil];
+    if (!h->window.isVisible) [h->window orderFront:nil];
+    if (!h->window.zoomed) [h->window zoom:nil];
+    return 1;
+  }
+}
+
+extern "C" __attribute__((visibility("default"))) int
+bunium_window_restore(void* handle) {
+  @autoreleasepool {
+    auto* h = static_cast<BuniumWindowHandle*>(handle);
+    if (!h || !h->window || h->closed_by_user.load()) return 0;
+    if (h->window.miniaturized) [h->window deminiaturize:nil];
+    if (h->window.zoomed) [h->window zoom:nil];
+    [h->window orderFront:nil];
+    return 1;
+  }
+}
+
+extern "C" __attribute__((visibility("default"))) int
+bunium_window_focus(void* handle) {
+  @autoreleasepool {
+    auto* h = static_cast<BuniumWindowHandle*>(handle);
+    if (!h || !h->window || h->closed_by_user.load()) return 0;
+    NSRunningApplication* application = [NSRunningApplication currentApplication];
+    const BOOL activated =
+        [application activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+    [NSApp activateIgnoringOtherApps:YES];
+    [h->window makeKeyAndOrderFront:nil];
+    return (activated || NSApp.isActive) && h->window.isKeyWindow ? 1 : 0;
+  }
+}
+
+extern "C" __attribute__((visibility("default"))) int
+bunium_window_show(void* handle) {
+  @autoreleasepool {
+    auto* h = static_cast<BuniumWindowHandle*>(handle);
+    if (!h || !h->window || h->closed_by_user.load()) return 0;
+    if (h->window.miniaturized) [h->window deminiaturize:nil];
+    [h->window orderFront:nil];
+    return 1;
+  }
+}
+
+extern "C" __attribute__((visibility("default"))) int
+bunium_window_hide(void* handle) {
+  @autoreleasepool {
+    auto* h = static_cast<BuniumWindowHandle*>(handle);
+    if (!h || !h->window || h->closed_by_user.load()) return 0;
+    [h->window orderOut:nil];
+    return 1;
+  }
+}
+
+extern "C" __attribute__((visibility("default"))) int
+bunium_window_set_always_on_top(void* handle, int enabled) {
+  @autoreleasepool {
+    auto* h = static_cast<BuniumWindowHandle*>(handle);
+    if (!h || !h->window || h->closed_by_user.load() ||
+        (enabled != 0 && enabled != 1)) return 0;
+    h->window.level = enabled ? NSFloatingWindowLevel : NSNormalWindowLevel;
+    return 1;
+  }
+}
+
 // A sublayer is a second independently-painted CAMetalLayer composited
 // inside an existing window's layer tree -- the mechanical building block
 // for a DOM-integrated <webview>: the outer app is the window's primary
@@ -646,6 +738,11 @@ bunium_create_sublayer(void* window_handle, int x, int y, int width,
     sublayer.device = device;
     sublayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
     sublayer.framebufferOnly = NO;
+    // Independent trusted overlays preserve CEF's transparent BGRA pixels so
+    // native guest layers underneath remain visible. Hit testing is still
+    // rectangle/clip based; transparent pixels do not automatically pass input.
+    sublayer.opaque = NO;
+    sublayer.backgroundColor = NSColor.clearColor.CGColor;
     sublayer.frame = CGRectMake(x, y, width, height);
     sublayer.drawableSize = CGSizeMake(width, height);
     sublayer.geometryFlipped = YES;
@@ -703,20 +800,56 @@ bunium_sublayer_set_frame(void* layer_handle, int x, int y, int width,
 // origin via BuniumSublayerReposition instead of the host's. Safe to call
 // every rAF tick while scrolling -- `clipLayer` is only created once (first
 // call), later calls just move the existing one.
+extern "C" void bunium_sublayer_set_clip_shape(
+    void* layer_handle, int clip_x, int clip_y, int clip_w, int clip_h,
+    double corner_radius);
+
 extern "C" __attribute__((visibility("default"))) void
 bunium_sublayer_set_clip(void* layer_handle, int clip_x, int clip_y,
                           int clip_w, int clip_h) {
+  bunium_sublayer_set_clip_shape(layer_handle, clip_x, clip_y, clip_w, clip_h,
+                                  0);
+}
+
+extern "C" __attribute__((visibility("default"))) void
+bunium_sublayer_set_clip_shape(void* layer_handle, int clip_x, int clip_y,
+                               int clip_w, int clip_h, double corner_radius) {
   auto* h = static_cast<BuniumWindowHandle*>(layer_handle);
+  CGFloat maxRadius = std::max(0.0, std::min(clip_w, clip_h) / 2.0);
+  CGFloat radius = std::max(0.0, std::min((CGFloat)corner_radius, maxRadius));
   if (!h->clipLayer) {
     CALayer* clip = [CALayer layer];
     clip.masksToBounds = YES;
+    clip.cornerRadius = radius;
     [h->hostLayer addSublayer:clip];
     [h->layer removeFromSuperlayer];
     [clip addSublayer:h->layer];
     h->clipLayer = clip;
   }
   h->clipLayer.frame = CGRectMake(clip_x, clip_y, clip_w, clip_h);
+  h->clipLayer.cornerRadius = radius;
+  h->clipCornerRadius = radius;
   BuniumSublayerReposition(h);
+}
+
+extern "C" __attribute__((visibility("default"))) bool
+bunium_sublayer_contains_point(void* layer_handle, int x, int y) {
+  auto* h = static_cast<BuniumWindowHandle*>(layer_handle);
+  CGRect frame = h->absFrame;
+  CGPoint point = CGPointMake(x, y);
+  if (!CGRectContainsPoint(frame, point)) return false;
+  if (!h->clipLayer) return true;
+  CGRect clip = h->clipLayer.frame;
+  if (!CGRectContainsPoint(clip, point)) return false;
+  CGFloat radius = h->clipCornerRadius;
+  if (radius <= 0) return true;
+  CGFloat localX = point.x - clip.origin.x;
+  CGFloat localY = point.y - clip.origin.y;
+  CGFloat nearestX = std::clamp(localX, radius, clip.size.width - radius);
+  CGFloat nearestY = std::clamp(localY, radius, clip.size.height - radius);
+  CGFloat dx = localX - nearestX;
+  CGFloat dy = localY - nearestY;
+  return dx * dx + dy * dy <= radius * radius;
 }
 
 // Removes an active clip (e.g. the element scrolled out from under its
@@ -732,6 +865,7 @@ bunium_sublayer_clear_clip(void* layer_handle) {
   [h->hostLayer addSublayer:h->layer];
   [h->clipLayer removeFromSuperlayer];
   h->clipLayer = nil;
+  h->clipCornerRadius = 0;
   BuniumSublayerReposition(h);
 }
 

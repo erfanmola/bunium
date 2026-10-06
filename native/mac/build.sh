@@ -44,7 +44,7 @@ clang++ "${CXXFLAGS[@]}" \
   "$WRAPPER"
 
 clang++ "${CXXFLAGS[@]}" \
-  -I"$CEF_ROOT" -F"$FRAMEWORK_DIR" -framework "Chromium Embedded Framework" \
+  -I"$CEF_ROOT" \
   -Wl,-headerpad_max_install_names \
   -o "$OUT_DIR/bunium_subprocess" \
   "$SCRIPT_DIR/subprocess_main.cpp" \
@@ -53,10 +53,6 @@ clang++ "${CXXFLAGS[@]}" \
 install_name_tool -change \
   "@executable_path/../Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework" \
   "$FW" "$OUT_DIR/bunium_shim.dylib"
-install_name_tool -change \
-  "@executable_path/../Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework" \
-  "$FW" "$OUT_DIR/bunium_subprocess"
-
 # Chromium's GPU process looks for ANGLE's GL libs next to the executable
 # that launched it (bunium_subprocess here, not inside an app bundle where
 # they'd normally live in Contents/Frameworks). Without these the GPU

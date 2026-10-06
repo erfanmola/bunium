@@ -692,11 +692,79 @@ __declspec(dllexport) int bunium_window_is_closed(void* handle) {
   return h->closed ? 1 : 0;
 }
 
+__declspec(dllexport) int bunium_window_control_capabilities(void* handle) {
+  auto* h = static_cast<BuniumWinHandle*>(handle);
+  if (!h || h->is_sublayer || h->closed || !h->hwnd || !IsWindow(h->hwnd))
+    return 0;
+  int capabilities = (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) |
+                     (1 << 6);
+  if (h->resizable) capabilities |= 1 << 1;
+  return capabilities;
+}
+
+__declspec(dllexport) int bunium_window_minimize(void* handle) {
+  auto* h = static_cast<BuniumWinHandle*>(handle);
+  if (!h || h->closed || !h->hwnd || !IsWindow(h->hwnd)) return 0;
+  if (IsIconic(h->hwnd)) return 1;
+  ShowWindow(h->hwnd, SW_MINIMIZE);
+  return IsIconic(h->hwnd) ? 1 : 0;
+}
+
+__declspec(dllexport) int bunium_window_maximize(void* handle) {
+  auto* h = static_cast<BuniumWinHandle*>(handle);
+  if (!h || h->closed || !h->resizable || !h->hwnd || !IsWindow(h->hwnd))
+    return 0;
+  if (!IsZoomed(h->hwnd)) ShowWindow(h->hwnd, SW_MAXIMIZE);
+  return IsZoomed(h->hwnd) ? 1 : 0;
+}
+
+__declspec(dllexport) int bunium_window_restore(void* handle) {
+  auto* h = static_cast<BuniumWinHandle*>(handle);
+  if (!h || h->closed || !h->hwnd || !IsWindow(h->hwnd)) return 0;
+  ShowWindow(h->hwnd, SW_RESTORE);
+  return 1;
+}
+
+__declspec(dllexport) int bunium_window_focus(void* handle) {
+  auto* h = static_cast<BuniumWinHandle*>(handle);
+  if (!h || h->closed || !h->hwnd || !IsWindow(h->hwnd)) return 0;
+  return (SetForegroundWindow(h->hwnd) || GetForegroundWindow() == h->hwnd)
+             ? 1
+             : 0;
+}
+
+__declspec(dllexport) int bunium_window_show(void* handle) {
+  auto* h = static_cast<BuniumWinHandle*>(handle);
+  if (!h || h->closed || !h->hwnd || !IsWindow(h->hwnd)) return 0;
+  ShowWindow(h->hwnd, SW_SHOWNOACTIVATE);
+  return IsWindowVisible(h->hwnd) ? 1 : 0;
+}
+
+__declspec(dllexport) int bunium_window_hide(void* handle) {
+  auto* h = static_cast<BuniumWinHandle*>(handle);
+  if (!h || h->closed || !h->hwnd || !IsWindow(h->hwnd)) return 0;
+  ShowWindow(h->hwnd, SW_HIDE);
+  return IsWindowVisible(h->hwnd) ? 0 : 1;
+}
+
+__declspec(dllexport) int bunium_window_set_always_on_top(void* handle,
+                                                           int enabled) {
+  auto* h = static_cast<BuniumWinHandle*>(handle);
+  if (!h || h->closed || (enabled != 0 && enabled != 1) || !h->hwnd ||
+      !IsWindow(h->hwnd)) return 0;
+  const HWND insert_after = enabled ? HWND_TOPMOST : HWND_NOTOPMOST;
+  return SetWindowPos(h->hwnd, insert_after, 0, 0, 0, 0,
+                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+             ? 1
+             : 0;
+}
+
 __declspec(dllexport) void bunium_window_close(void* handle) {
   auto* h = static_cast<BuniumWinHandle*>(handle);
-  if (h->closed) return;
+  if (!h) return;
+  if (!h->closed && h->hwnd && IsWindow(h->hwnd)) DestroyWindow(h->hwnd);
   h->closed = true;
-  DestroyWindow(h->hwnd);
+  DeleteHandle(h);
 }
 
 __declspec(dllexport) double bunium_window_get_scale(void* handle) {

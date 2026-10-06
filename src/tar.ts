@@ -12,7 +12,7 @@
 // {path, data} pairs (see collectDirectory for the tree-walking helper).
 
 import { writeSync } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import { join, normalize } from "node:path";
 
 export interface TarEntry {
@@ -39,6 +39,15 @@ const MODE_DIR = 0o755;
 const TYPE_REG = 0x30; // '0'
 const TYPE_DIR = 0x35; // '5'
 
+// Update archives are untrusted input. Keep extraction bounded even when a
+// publisher (or feed) serves a corrupt archive. These limits are deliberately
+// generous for application-layer bundles while preventing path and size bombs.
+export const TAR_LIMITS = {
+  entries: 20_000,
+  fileBytes: 256 * 1024 * 1024,
+  totalBytes: 1024 * 1024 * 1024,
+} as const;
+
 function encodeOctal(value: number, width: number): Uint8Array {
   const body = value.toString(8);
   if (body.length > width - 1) {
@@ -52,11 +61,12 @@ function encodeOctal(value: number, width: number): Uint8Array {
 }
 
 function encodeAscii(s: string, width: number): Uint8Array {
-  if (s.length > width) {
-    throw new Error(`tar: field too long (${s.length} > ${width}): ${s}`);
+  const bytes = new TextEncoder().encode(s);
+  if (bytes.length > width) {
+    throw new Error(`tar: field too long (${bytes.length} > ${width}): ${s}`);
   }
   const field = new Uint8Array(width);
-  field.set(new TextEncoder().encode(s), 0);
+  field.set(bytes, 0);
   return field;
 }
 
@@ -107,9 +117,7 @@ function parseAsciiField(
   const end = block.indexOf(0, start);
   const limit = end === -1 ? start + width : end;
   const slice = block.subarray(start, limit);
-  let str = "";
-  for (const b of slice) str += String.fromCharCode(b);
-  return str;
+  return new TextDecoder("utf-8", { fatal: true }).decode(slice);
 }
 
 function parseOctal(block: Uint8Array, start: number, width: number): number {
@@ -132,6 +140,33 @@ function parseOctal(block: Uint8Array, start: number, width: number): number {
  */
 export function writeTar(entries: readonly TarEntry[]): Uint8Array {
   const sorted = [...entries].map((e) => ({ ...e })).sort(compareEntries);
+  if (sorted.length > TAR_LIMITS.entries) {
+    throw new Error(`tar: entry limit exceeded (${TAR_LIMITS.entries})`);
+  }
+  const seen = new Set<string>();
+  let totalBytes = 0;
+  for (const entry of sorted) {
+    const path = validateArchivePath(entry.path, entry.directory === true);
+    if (seen.has(path)) throw new Error(`tar: duplicate path ${path}`);
+    seen.add(path);
+    if (!(entry.data instanceof Uint8Array)) {
+      throw new Error(`tar: file data must be a Uint8Array: ${path}`);
+    }
+    if (entry.directory === true && entry.data.length !== 0) {
+      throw new Error(`tar: directory has payload: ${path}`);
+    }
+    if (entry.directory !== true) {
+      if (entry.data.length > TAR_LIMITS.fileBytes) {
+        throw new Error(`tar: file limit exceeded for ${path}`);
+      }
+      totalBytes += entry.data.length;
+      if (totalBytes > TAR_LIMITS.totalBytes) {
+        throw new Error(
+          `tar: total file limit exceeded (${TAR_LIMITS.totalBytes})`,
+        );
+      }
+    }
+  }
   const blocks: Uint8Array[] = [];
   for (const entry of sorted) {
     blocks.push(buildHeader(entry));
@@ -168,12 +203,37 @@ export interface TarContents {
 }
 
 export function readTar(archive: Uint8Array): TarContents {
+  if (archive.length === 0 || archive.length % BLOCK !== 0) {
+    throw new Error("tar: archive length is not block aligned");
+  }
   const files = new Map<string, Uint8Array>();
   const directories = new Set<string>();
   let offset = 0;
+  let entries = 0;
+  let totalBytes = 0;
+  const seen = new Set<string>();
+  let terminated = false;
   while (offset + BLOCK <= archive.length) {
     const block = archive.subarray(offset, offset + BLOCK);
-    if (isZeroBlock(block)) break;
+    if (isZeroBlock(block)) {
+      if (offset + BLOCK * END_BLOCKS > archive.length) {
+        throw new Error("tar: missing two-block end marker");
+      }
+      if (!isZeroBlock(archive.subarray(offset + BLOCK))) {
+        throw new Error("tar: non-zero data after end marker");
+      }
+      for (
+        let trailing = offset + BLOCK * END_BLOCKS;
+        trailing < archive.length;
+        trailing += BLOCK
+      ) {
+        if (!isZeroBlock(archive.subarray(trailing, trailing + BLOCK))) {
+          throw new Error("tar: non-zero data after end marker");
+        }
+      }
+      terminated = true;
+      break;
+    }
     const magic = parseAsciiField(block, 257, 8);
     if (!magic.startsWith("ustar")) {
       throw new Error(`tar: not a ustar archive at offset ${offset}`);
@@ -186,25 +246,64 @@ export function readTar(archive: Uint8Array): TarContents {
       );
     }
     const name = parseAsciiField(block, 0, 100);
+    const prefix = parseAsciiField(block, 345, 155);
+    const fullPath = prefix ? `${prefix}/${name}` : name;
     const size = parseOctal(block, 124, 12);
     const typeflag = block[156] ?? TYPE_REG;
+    const path = validateArchivePath(fullPath, typeflag === TYPE_DIR);
+    entries++;
+    if (entries > TAR_LIMITS.entries) {
+      throw new Error(`tar: entry limit exceeded (${TAR_LIMITS.entries})`);
+    }
+    if (seen.has(path)) throw new Error(`tar: duplicate path ${path}`);
+    seen.add(path);
     offset += BLOCK;
     if (typeflag === TYPE_DIR) {
-      directories.add(name);
+      if (size !== 0) throw new Error(`tar: directory has payload: ${path}`);
+      directories.add(path);
       continue;
     }
     if (typeflag !== TYPE_REG) {
       throw new Error(
-        `tar: unsupported typeflag ${String(typeflag)} for ${name}`,
+        `tar: unsupported typeflag ${String(typeflag)} for ${path}`,
       );
     }
-    if (offset + size > archive.length) {
-      throw new Error(`tar: truncated payload for ${name}`);
+    if (size > TAR_LIMITS.fileBytes) {
+      throw new Error(`tar: file limit exceeded for ${path}`);
     }
-    files.set(name, archive.subarray(offset, offset + size));
-    offset += size + ((BLOCK - (size % BLOCK)) % BLOCK);
+    totalBytes += size;
+    if (totalBytes > TAR_LIMITS.totalBytes) {
+      throw new Error(
+        `tar: total file limit exceeded (${TAR_LIMITS.totalBytes})`,
+      );
+    }
+    const paddedSize = size + ((BLOCK - (size % BLOCK)) % BLOCK);
+    if (offset + paddedSize > archive.length) {
+      throw new Error(`tar: truncated payload for ${path}`);
+    }
+    files.set(path, archive.subarray(offset, offset + size));
+    offset += paddedSize;
   }
+  if (!terminated) throw new Error("tar: missing end marker");
   return { files, directories };
+}
+
+function validateArchivePath(path: string, directory: boolean): string {
+  if (path === "." && directory) return path;
+  if (
+    path.length === 0 ||
+    path.startsWith("/") ||
+    path.includes("\\") ||
+    path.includes(":") ||
+    path.includes("\0")
+  ) {
+    throw new Error(`tar: unsafe archive path ${JSON.stringify(path)}`);
+  }
+  const parts = path.split("/");
+  if (parts.some((part) => part === "" || part === "." || part === "..")) {
+    throw new Error(`tar: unsafe archive path ${JSON.stringify(path)}`);
+  }
+  return path;
 }
 
 /** Normalizes a native path for archive use: POSIX separators, no "." parts. */
@@ -221,7 +320,10 @@ export async function collectDirectory(root: string): Promise<TarEntry[]> {
   const entries: TarEntry[] = [];
   const walk = async (rel: string): Promise<void> => {
     const abs = rel === "" ? root : join(root, rel);
-    const info = await stat(abs);
+    const info = await lstat(abs);
+    if (info.isSymbolicLink()) {
+      throw new Error(`tar: symbolic links are not supported: ${abs}`);
+    }
     if (info.isDirectory()) {
       entries.push({
         path: rel === "" ? "." : toPosixPath(rel),

@@ -31,6 +31,7 @@ if (process.platform === "win32") {
 export const rootCachePath = process.env.BUNIUM_ROOT_CACHE_PATH ?? "";
 
 export const lib = dlopen(paths.shim, {
+  bunium_trusted_origins_api_version: { args: [], returns: FFIType.i32 },
   bunium_init: {
     args: [FFIType.cstring, FFIType.cstring, FFIType.cstring, FFIType.cstring],
     returns: FFIType.i32,
@@ -60,6 +61,51 @@ export const lib = dlopen(paths.shim, {
   bunium_create_view: {
     args: [FFIType.cstring, FFIType.i32, FFIType.i32, FFIType.i32],
     returns: FFIType.ptr,
+  },
+  bunium_create_trusted_view: {
+    args: [
+      FFIType.cstring,
+      FFIType.i32,
+      FFIType.i32,
+      FFIType.i32,
+      FFIType.cstring,
+      FFIType.ptr,
+    ],
+    returns: FFIType.ptr,
+  },
+  // Partition sessions (see the "Partition sessions" block in
+  // native/mac/bunium_shim.cpp and src/session.ts).
+  bunium_partition_root: { args: [], returns: FFIType.cstring },
+  bunium_session_create: { args: [FFIType.cstring], returns: FFIType.ptr },
+  bunium_session_release: { args: [FFIType.ptr], returns: FFIType.void },
+  // Untrusted guest views (src/guest.ts).
+  bunium_create_guest_view: {
+    args: [
+      FFIType.cstring,
+      FFIType.i32,
+      FFIType.i32,
+      FFIType.ptr,
+      FFIType.cstring,
+      FFIType.cstring,
+    ],
+    returns: FFIType.ptr,
+  },
+  bunium_guest_post: {
+    args: [FFIType.ptr, FFIType.i32, FFIType.cstring],
+    returns: FFIType.i32,
+  },
+  bunium_guest_stats: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+    returns: FFIType.void,
+  },
+  bunium_guest_set_geolocation: {
+    args: [FFIType.ptr, FFIType.i32, FFIType.f64, FFIType.f64, FFIType.f64],
+    returns: FFIType.i32,
+  },
+  bunium_reload: { args: [FFIType.ptr, FFIType.i32], returns: FFIType.void },
+  bunium_debug_live_counts: {
+    args: [FFIType.ptr, FFIType.ptr],
+    returns: FFIType.void,
   },
   bunium_navigate: {
     args: [FFIType.ptr, FFIType.cstring],
@@ -123,6 +169,17 @@ export const lib = dlopen(paths.shim, {
   bunium_set_native_sublayer_clip: {
     args: [FFIType.ptr, FFIType.i32, FFIType.i32, FFIType.i32, FFIType.i32],
     returns: FFIType.void,
+  },
+  bunium_set_native_sublayer_clip_shape: {
+    args: [
+      FFIType.ptr,
+      FFIType.i32,
+      FFIType.i32,
+      FFIType.i32,
+      FFIType.i32,
+      FFIType.f64,
+    ],
+    returns: FFIType.i32,
   },
   bunium_clear_native_sublayer_clip: {
     args: [FFIType.ptr],
@@ -210,6 +267,20 @@ export const lib = dlopen(paths.shim, {
     returns: FFIType.void,
   },
   bunium_window_get_id: { args: [FFIType.ptr], returns: FFIType.i32 },
+  bunium_window_control_capabilities: {
+    args: [FFIType.ptr],
+    returns: FFIType.i32,
+  },
+  bunium_window_minimize: { args: [FFIType.ptr], returns: FFIType.i32 },
+  bunium_window_maximize: { args: [FFIType.ptr], returns: FFIType.i32 },
+  bunium_window_restore: { args: [FFIType.ptr], returns: FFIType.i32 },
+  bunium_window_focus: { args: [FFIType.ptr], returns: FFIType.i32 },
+  bunium_window_show: { args: [FFIType.ptr], returns: FFIType.i32 },
+  bunium_window_hide: { args: [FFIType.ptr], returns: FFIType.i32 },
+  bunium_window_set_always_on_top: {
+    args: [FFIType.ptr, FFIType.i32],
+    returns: FFIType.i32,
+  },
   bunium_get_native_window_scale: { args: [FFIType.ptr], returns: FFIType.f64 },
   bunium_close_native_window: { args: [FFIType.ptr], returns: FFIType.void },
   bunium_is_native_window_closed: { args: [FFIType.ptr], returns: FFIType.i32 },
