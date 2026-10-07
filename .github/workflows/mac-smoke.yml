@@ -260,6 +260,7 @@ jobs:
 
       - name: Probe — packaged tree without per-app cache root (diagnostic, non-gating)
         timeout-minutes: 4
+        if: always()
         # Runs the SAME packaged tree (same shim/helpers/dist) but bypasses
         # the launcher so BUNIUM_ROOT_CACHE_PATH stays unset: no_sandbox=true
         # with the default cache path. The gating step above runs sandboxed
