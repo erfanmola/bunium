@@ -791,7 +791,10 @@ BUNIUM_LINUX_EXPORT int bunium_window_control_capabilities(void* handle) {
   Display* d = GetDisplay();
   if (!h || !d || h->is_sublayer || h->closed) return 0;
   int capabilities = (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5);
-  if (SupportsMaximize(d)) capabilities |= 1 << 1;
+  // A fixed-size window cannot be maximized: gate the bit on the window's
+  // own resizable flag, not just WM support (Linux qual 01f -- Mutter
+  // advertises _NET_WM_STATE_MAXIMIZED_* for every window).
+  if (h->resizable && SupportsMaximize(d)) capabilities |= 1 << 1;
   if (WindowManagerSupports(
           d, XInternAtom(d, "_NET_WM_STATE_ABOVE", False)))
     capabilities |= 1 << 6;
@@ -810,7 +813,8 @@ BUNIUM_LINUX_EXPORT int bunium_window_minimize(void* handle) {
 BUNIUM_LINUX_EXPORT int bunium_window_maximize(void* handle) {
   auto* h = static_cast<BuniumLinuxHandle*>(handle);
   Display* d = GetDisplay();
-  if (!h || !d || h->is_sublayer || h->closed || !SupportsMaximize(d))
+  if (!h || !d || h->is_sublayer || h->closed || !h->resizable ||
+      !SupportsMaximize(d))
     return 0;
   const Atom vertical = XInternAtom(d, "_NET_WM_STATE_MAXIMIZED_VERT", False);
   const Atom horizontal = XInternAtom(d, "_NET_WM_STATE_MAXIMIZED_HORZ", False);

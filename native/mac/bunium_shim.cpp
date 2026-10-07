@@ -501,19 +501,25 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
   g_app = new BuniumApp();
 
   CefSettings settings;
+#if defined(__APPLE__)
   // The packaged launcher sets a per-app cache root. Packaged helpers have
   // the bundle layout and bootstrap needed for CEF's macOS Seatbelt sandbox;
   // source-tree development runs use the unsandboxed helper binary.
   settings.no_sandbox = !(root_cache_path && *root_cache_path);
-#if defined(__APPLE__)
   if (!settings.no_sandbox)
     fprintf(stderr, "[sandbox] packaged macOS sandbox mode enabled\n");
-#else
+#elif defined(__linux__)
+  // Linux ships no OS sandbox (no Seatbelt, no setuid helper in the
+  // package): running CEF's sandbox model anyway breaks renderer-crash
+  // reporting (OnRenderProcessTerminated never fires -- Linux qual 01c),
+  // so packaged and dev-tree runs alike stay unsandboxed here.
+  settings.no_sandbox = true;
   // No Seatbelt/cef_sandbox.lib off macOS: report honestly instead of
-  // printing the macOS line (packaged launchers always set a cache root,
-  // so no_sandbox is false here too).
-  if (!settings.no_sandbox)
+  // printing the macOS line (packaged launchers always set a cache root).
+  if (root_cache_path && *root_cache_path)
     fprintf(stderr, "[sandbox] packaged run without OS sandbox (macOS-only)\n");
+#else
+  settings.no_sandbox = !(root_cache_path && *root_cache_path);
 #endif
   settings.windowless_rendering_enabled = true;
   settings.multi_threaded_message_loop = false;
