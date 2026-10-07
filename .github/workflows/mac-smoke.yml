@@ -108,13 +108,16 @@ jobs:
       - name: Probe — dev-mode loopback (diagnostic, non-gating)
         timeout-minutes: 3
         # Same-runner contrast for the packaged TRUSTED_ORIGIN failure:
-        # identical env and loopback shape, but unpackaged (dev helper, no
-        # .app sandbox context). DEV_LOOPBACK:PASS + packaged FAIL isolates
-        # the .app packaging context; DEV_LOOPBACK:FAIL points at runner
-        # infra instead. Never gates the job -- verdict line is the record.
+        # identical env and two-window loopback shape (trusted 127.0.0.1 +
+        # untrusted localhost, mirroring the fixture), but unpackaged (dev
+        # helper, no .app sandbox context). DEV_LOOPBACK2:PASS + packaged
+        # FAIL isolates the .app packaging context; DEV_LOOPBACK2:FAIL
+        # points at runner infra instead. Never gates the job -- verdict
+        # line is the record.
         continue-on-error: true
         env:
-          BUNIUM_CEF_SWITCHES: "--disable-gpu --disable-gpu-compositing"
+          BUNIUM_CEF_VERBOSE: "1"
+          BUNIUM_CEF_SWITCHES: "--disable-gpu --disable-gpu-compositing --enable-logging=stderr --v=1"
           no_proxy: "127.0.0.1,localhost"
         run: |
           cat > dev-loopback-probe.ts <<'PROBE_EOF'
@@ -131,33 +134,52 @@ jobs:
               );
             },
           });
-          const got = new Set<string>();
-          let win: BuniumWindow | undefined;
+          const origin = server.url.origin;
+          let messages = 0;
+          let trustedWindow: BuniumWindow | undefined;
+          let untrustedWindow: BuniumWindow | undefined;
           try {
-            win = new BuniumWindow({
-              url: `${server.url.origin}/t`,
-              trustedOrigins: [server.url.origin],
+            trustedWindow = new BuniumWindow({
+              url: `${origin}/t`,
+              trustedOrigins: [origin],
               width: 320,
               height: 240,
-              title: "dev loopback probe",
+              title: "dev probe trusted",
             });
-            win.on("dev-probe", (payload) => got.add(String(payload)));
+            trustedWindow.on("dev-probe", () => {
+              messages += 1;
+            });
+            untrustedWindow = new BuniumWindow({
+              url: `http://localhost:${server.port}/u`,
+              trustedOrigins: [origin],
+              width: 320,
+              height: 240,
+              title: "dev probe untrusted",
+            });
+            untrustedWindow.on("dev-probe", () => {
+              messages += 1;
+            });
             const deadline = Date.now() + 30000;
-            while (Date.now() < deadline && (got.size === 0 || !seen.has("/t"))) {
+            while (
+              Date.now() < deadline &&
+              (messages < 1 || !seen.has("/u"))
+            ) {
               await Bun.sleep(50);
             }
-            const passed = seen.has("/t") && got.size > 0;
+            const passed =
+              seen.has("/t") && seen.has("/u") && messages >= 1;
             console.log(
-              `DEV_LOOPBACK:${passed ? "PASS" : "FAIL"} (requests=${[...seen].join(",")}; messages=${got.size})`,
+              `DEV_LOOPBACK2:${passed ? "PASS" : "FAIL"} (requests=${[...seen].join(",")}; messages=${messages})`,
             );
           } finally {
-            win?.close();
+            trustedWindow?.close();
+            untrustedWindow?.close();
             server.stop();
           }
           PROBE_EOF
           bun dev-loopback-probe.ts > dev-loopback.log 2>&1 || true
-          grep -qE "DEV_LOOPBACK:(PASS|FAIL)" dev-loopback.log || echo "DEV_LOOPBACK:NO-VERDICT" | tee -a dev-loopback.log
-          cat dev-loopback.log
+          grep -qE "DEV_LOOPBACK2:(PASS|FAIL)" dev-loopback.log || echo "DEV_LOOPBACK2:NO-VERDICT" | tee -a dev-loopback.log
+          grep -E "DEV_LOOPBACK2" dev-loopback.log
           rm -f dev-loopback-probe.ts
 
       - name: Collect crash reports
@@ -177,7 +199,11 @@ jobs:
           # Same GPU-less-runner fix as the smoke step above -- the packaged
           # launcher execs bun directly and inherits this env, but doesn't
           # get it for free just because the dev-mode step above set it.
-          BUNIUM_CEF_SWITCHES: "--disable-gpu --disable-gpu-compositing"
+          # Verbose browser logging for the packaged-loopback diagnosis
+          # (browser-side navigation/proxy lines land in pack-verify.log;
+          # helper stderr does not propagate out of the sandbox).
+          BUNIUM_CEF_VERBOSE: "1"
+          BUNIUM_CEF_SWITCHES: "--disable-gpu --disable-gpu-compositing --enable-logging=stderr --v=1"
           # CI macOS runners advertise PAC/WPAD proxy auto-discovery, which
           # can intercept even loopback and abort the fixture's 127.0.0.1
           # requests (TRUSTED_ORIGIN_VERIFY:FAIL with requests=). Chromium
@@ -220,6 +246,12 @@ jobs:
         run: |
           log show --last 30m --predicate 'process == "sandboxd"' --style compact > sandboxd.log 2>&1 || true
           grep -ai "bunium" sandboxd.log | grep -ai "deny" | head -n 50 || echo "no bunium sandboxd denials captured"
+          echo "--- recent DiagnosticReports (helper crashes would land here) ---"
+          ls -lt ~/Library/Logs/DiagnosticReports/ 2>/dev/null | head -n 15 || echo "no DiagnosticReports dir"
+          for f in $(find ~/Library/Logs/DiagnosticReports -name '*bunium*' -mmin -40 2>/dev/null | head -n 5); do
+            echo "=== $f ==="
+            head -n 40 "$f"
+          done
 
       - name: Upload logs
         uses: actions/upload-artifact@v4
