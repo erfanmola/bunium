@@ -120,6 +120,15 @@ jobs:
           BUNIUM_CEF_SWITCHES: "--disable-gpu --disable-gpu-compositing --enable-logging=stderr --v=1"
           no_proxy: "127.0.0.1,localhost"
         run: |
+          # CEF-process hygiene: earlier steps' helpers (bunium_subprocess
+          # bundles) are NOT matched by the BuniumFixture-only pkill below
+          # and linger holding profile locks / CPU on this small VM -- a
+          # later run then fails at init with "Opening in existing browser
+          # session" (seen for real). Reap everything CEF before starting.
+          pkill -KILL -f bunium_subprocess 2>/dev/null || true
+          pkill -KILL -f BuniumFixture 2>/dev/null || true
+          pkill -KILL -f "Resources/app" 2>/dev/null || true
+          sleep 1
           cat > dev-loopback-probe.ts <<'PROBE_EOF'
           import { BuniumWindow } from "bunium";
           const seen = new Set<string>();
@@ -243,6 +252,11 @@ jobs:
           # a post-verdict hang can't stall the job for the full timeout.
           ./dist-app/BuniumFixture.app/Contents/MacOS/BuniumFixture > pack-verify.log 2>&1 &
           app_pid=$!
+          # Hang-vs-death watchdog (observation only): snapshot CEF
+          # processes mid-wait. Renderers alive at +20s with no V8 context
+          # means startup hang; gone means silent death -- the verdict lines
+          # alone cannot distinguish them.
+          (sleep 20; ps aux | grep -E "bunium_subprocess|BuniumFixture" | grep -v grep > ps-snapshot.log 2>&1 || true) &
           deadline=$((SECONDS + 60))
           while [ "$SECONDS" -lt "$deadline" ]; do
             grep -qE "PACKAGED_APP_VERIFY:(PASS|FAIL)" pack-verify.log && break
@@ -274,6 +288,10 @@ jobs:
           BUNIUM_CEF_SWITCHES: "--disable-gpu --disable-gpu-compositing --enable-logging=stderr --v=1"
           no_proxy: "127.0.0.1,localhost"
         run: |
+          pkill -KILL -f bunium_subprocess 2>/dev/null || true
+          pkill -KILL -f BuniumFixture 2>/dev/null || true
+          pkill -KILL -f "Resources/app" 2>/dev/null || true
+          sleep 1
           APP="dist-app/BuniumFixture.app"
           env -u BUNIUM_ROOT_CACHE_PATH \
             BUNIUM_SHIM_PATH="$PWD/$APP/Contents/Frameworks/bunium_shim.dylib" \
@@ -316,6 +334,7 @@ jobs:
             pack.log
             pack-verify.log
             pack-bypass.log
+            ps-snapshot.log
             dev-loopback.log
             sandboxd.log
             crash-reports/
