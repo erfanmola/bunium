@@ -194,6 +194,108 @@ mkdir -p "$resource_app/node_modules/bunium"
 cp -R "$BUNIUM_REPO/src/." "$resource_app/node_modules/bunium/src/"
 cp "$BUNIUM_REPO/package.json" "$resource_app/node_modules/bunium/package.json"
 
+# --- app dependencies: real apps (unlike fixtures) ship host-side npm deps
+# (e.g. Studio's "@mtcute/bun"). The tar above excluded node_modules
+# wholesale, so install production deps fresh into the staged app. Monorepo
+# siblings (a top-level node_modules/<dep> symlink pointing outside bun's
+# isolated .bun store, e.g. "workspace:*") are materialized from source below
+# -- the staged dir lives outside the workspace, where bun could not resolve
+# "workspace:*", and file: copies choke on workspaces' nested node_modules
+# symlinks. No-op for fixture apps (no runtime deps, so `bun install` exits
+# immediately without touching the network).
+if [ -f "$resource_app/package.json" ]; then
+  # Fresh per run: a previous aborted packaging must not leak rows in.
+  rm -f "$OUT_DIR/.workspace-deps.tsv" "$OUT_DIR/.workspace-copy.tsv"
+  for depdir in "$APP_DIR"/node_modules/* "$APP_DIR"/node_modules/@*/*; do
+    [ -L "$depdir" ] || continue
+    target="$(readlink -f "$depdir")"
+    case "$target" in
+      # Registry package (bun's isolated store, wherever the workspace root
+      # keeps it) -- `bun install` below resolves it normally.
+      */node_modules/.bun/*) continue ;;
+    esac
+    rel="${depdir#"$APP_DIR"/node_modules/}"
+    # node_modules/bunium itself is materialized from $BUNIUM_REPO above
+    # (matching native ABI) -- never treat it as a copy-from-source sibling.
+    if [ "$rel" = "bunium" ]; then continue; fi
+    # bun.exe is Windows-native: hand it a Windows path, not the msys form.
+    wintarget="$(cygpath -w "$target")"
+    printf '%s\t%s\n' "$rel" "$wintarget" >> "$OUT_DIR/.workspace-deps.tsv"
+  done
+  if [ -f "$OUT_DIR/.workspace-deps.tsv" ]; then
+    RESOURCE_APP="$resource_app" DEPS_TSV="$OUT_DIR/.workspace-deps.tsv" \
+      COPY_TSV="$OUT_DIR/.workspace-copy.tsv" "$BUN_BIN" -e '
+      import { readFileSync, writeFileSync } from "node:fs";
+      const appDir = process.env.RESOURCE_APP;
+      const pkgPath = `${appDir}/package.json`;
+      const pkg = JSON.parse(
+        readFileSync(pkgPath, "utf8").replace(/^\uFEFF/, ""),
+      );
+      const rows = readFileSync(process.env.DEPS_TSV, "utf8").trim().split("\n");
+      const copies = [];
+      for (const row of rows) {
+        const tab = row.indexOf("\t");
+        const name = row.slice(0, tab);
+        const target = row.slice(tab + 1);
+        for (const section of ["dependencies", "optionalDependencies"]) {
+          if (pkg[section]?.[name] !== undefined) {
+            // Monorepo sibling: materialize from source (like bunium below)
+            // instead of file:. bun copies file: deps through its cache, which
+            // chokes on the nested node_modules symlinks workspaces carry.
+            delete pkg[section][name];
+            copies.push(`${name}\t${target}`);
+          }
+        }
+      }
+      writeFileSync(process.env.COPY_TSV, copies.length ? `${copies.join("\n")}\n` : "");
+      // node_modules/bunium is materialized from $BUNIUM_REPO above (matching
+      // native ABI); drop the registry spec so `bun install` neither
+      // overwrites it nor downloads the heavy platform runtime packages.
+      delete pkg.dependencies?.bunium;
+      delete pkg.optionalDependencies?.bunium;
+      writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+    '
+    rm -f "$OUT_DIR/.workspace-deps.tsv"
+  else
+    # Even with no workspace siblings, the registry bunium spec must go:
+    # node_modules/bunium is already materialized from $BUNIUM_REPO.
+    RESOURCE_APP="$resource_app" "$BUN_BIN" -e '
+      import { readFileSync, writeFileSync } from "node:fs";
+      const pkgPath = `${process.env.RESOURCE_APP}/package.json`;
+      const pkg = JSON.parse(
+        readFileSync(pkgPath, "utf8").replace(/^\uFEFF/, ""),
+      );
+      delete pkg.dependencies?.bunium;
+      delete pkg.optionalDependencies?.bunium;
+      writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+    '
+  fi
+  # Shield the materialized node_modules/bunium across the install: some
+  # installers prune "extraneous" entries not in package.json.
+  if [ -d "$resource_app/node_modules/bunium" ]; then
+    mv "$resource_app/node_modules/bunium" "$resource_app/.bunium-staged-pkg"
+  fi
+  (cd "$resource_app" && "$BUN_BIN" install --production)
+  if [ -d "$resource_app/.bunium-staged-pkg" ]; then
+    rm -rf "$resource_app/node_modules/bunium"
+    mv "$resource_app/.bunium-staged-pkg" "$resource_app/node_modules/bunium"
+  fi
+  # Materialize monorepo siblings collected above (source copy minus their
+  # own node_modules -- their registry deps resolve from the fresh install).
+  if [ -f "$OUT_DIR/.workspace-copy.tsv" ]; then
+    while IFS="$(printf '\t')" read -r name target; do
+      [ -n "$name" ] || continue
+      dest="$resource_app/node_modules/$name"
+      mkdir -p "$dest"
+      # target is a Windows path (cygpath -w); make it msys-readable again.
+      srcrel="$(cygpath -u "$target")"
+      tar -C "$srcrel" --exclude ./node_modules -cf - . |
+        (cd "$dest" && tar -xf -)
+    done < "$OUT_DIR/.workspace-copy.tsv"
+    rm -f "$OUT_DIR/.workspace-copy.tsv"
+  fi
+fi
+
 # --- bun.exe + comctl32 v6 SxS manifest ---
 cp "$BUN_BIN" "$PACKAGE/bun.exe"
 cat > "$PACKAGE/bun.exe.manifest" <<'EOF'

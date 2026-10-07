@@ -12,35 +12,60 @@
 // element at (150,50)-(350,200) inside a (50,50)-(200,200) overflow:hidden
 // container, so the element's visible (post-clip) rect is (150,50)-(200,200)
 // and its clipped-away portion is (200,50)-(350,200).
+
+import type { Server } from "bun";
 import { app } from "../src/app";
 import { BuniumWindow } from "../src/index";
 import { lib } from "../src/native";
 
-const innerPage = (bg: string) =>
-  `data:text/html,${encodeURIComponent(`
+const innerBody = (bg: string) => `
 <body style="margin:0">
 <div id="box" style="width:100%;height:100%;background:${bg}"
      onclick="document.getElementById('box').style.background='lime'"></div>
 </body>
-`)}`;
+`;
 
-const outerHtml = `data:text/html,${encodeURIComponent(`
+const outerBody = (origin: string) => `
 <body style="margin:0">
 <div id="obox" style="width:100%;height:100%;background:red"
      onclick="document.getElementById('obox').style.background='lime'"></div>
 <div style="position:absolute;left:50px;top:50px;width:150px;height:150px;overflow:hidden">
-  <bunium-webview id="wv" src="${innerPage("blue")}"
+  <bunium-webview id="wv" src="${origin}/inner?bg=blue"
     style="position:absolute;left:100px;top:0px;width:200px;height:150px;">
   </bunium-webview>
 </div>
 </body>
-`)}`;
+`;
+
+// Served over loopback http with an allowlisted origin: the v1 trust model
+// only injects window.__bunium into trusted origins, and opaque data:
+// origins cannot be allowlisted (see encodeTrustedOrigins in src/window.ts).
+const server: Server<never> = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname === "/inner")
+      return new Response(innerBody(url.searchParams.get("bg") ?? "blue"), {
+        headers: { "content-type": "text/html" },
+      });
+    if (url.pathname === "/outer") {
+      const origin = `http://127.0.0.1:${server.port}`;
+      return new Response(outerBody(origin), {
+        headers: { "content-type": "text/html" },
+      });
+    }
+    return new Response("not found", { status: 404 });
+  },
+});
+const origin = `http://127.0.0.1:${server.port}`;
 
 const win = new BuniumWindow({
-  url: outerHtml,
+  url: `${origin}/outer`,
   width: 600,
   height: 400,
   title: "webview clip hit test",
+  trustedOrigins: [origin],
 });
 
 function pump(ms: number) {
@@ -123,4 +148,5 @@ console.log(
 );
 
 win.close();
+server.stop(true);
 app.shutdown();

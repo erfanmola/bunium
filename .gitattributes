@@ -1,0 +1,5 @@
+# Normalize line endings: LF everywhere so checks pass on every OS
+# regardless of core.autocrlf. Windows batch files must stay CRLF for
+# cmd.exe — everything else is LF.
+* text=auto eol=lf
+*.bat text eol=crlf

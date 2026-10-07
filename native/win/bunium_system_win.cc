@@ -140,8 +140,11 @@ struct MenuHandle {
 // WM_COMMAND only carries 16 bits of id; ids at/above 0x10000 would collide.
 constexpr int kMaxMenuId = 0xFFFF;
 
-static HMENU BuildMenu(const std::vector<MenuItemSpec>& items) {
-  HMENU menu = CreatePopupMenu();
+static HMENU BuildMenu(const std::vector<MenuItemSpec>& items,
+                       bool top_level) {
+  // A menu bar must be a menu (CreateMenu); only submenus are popups. (A
+  // popup handle passed to SetMenu is rejected with ERROR_INVALID_PARAMETER.)
+  HMENU menu = top_level ? CreateMenu() : CreatePopupMenu();
   for (const auto& spec : items) {
     switch (spec.kind) {
       case MenuItemSpec::kSeparator:
@@ -158,13 +161,16 @@ static HMENU BuildMenu(const std::vector<MenuItemSpec>& items) {
                     spec.label.c_str());
         break;
       case MenuItemSpec::kSubmenu: {
-        HMENU sub = BuildMenu(spec.children);
+        HMENU sub = BuildMenu(spec.children, /*top_level=*/false);
         AppendMenuW(menu, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(sub),
                     spec.label.c_str());
         break;
       }
     }
   }
+  if (getenv("BUNIUM_INPUT_DIAG") && top_level)
+    fprintf(stderr, "[menu-diag] buildmenu handle=%p lasterr=%lu\n",
+            (void*)menu, (unsigned long)GetLastError());
   return menu;
 }
 
@@ -182,9 +188,17 @@ void BuniumSystemForwardMenuCommand(int id) {
 
 void BuniumApplyAppMenu(HWND hwnd) {
   MenuHandle* menu = g_app_menu;
+  if (getenv("BUNIUM_INPUT_DIAG"))
+    fprintf(stderr, "[menu-diag] apply hwnd=%p g_app_menu=%p items=%zu\n",
+            hwnd, (void*)menu,
+            menu ? menu->items().size() : 0);
   if (!menu) return;
-  HMENU rebuilt = BuildMenu(menu->items());
-  SetMenu(hwnd, rebuilt);  // window takes ownership; destroyed with it
+  HMENU rebuilt = BuildMenu(menu->items(), /*top_level=*/true);
+  BOOL ok = SetMenu(hwnd, rebuilt);  // window takes ownership; destroyed with it
+  if (getenv("BUNIUM_INPUT_DIAG"))
+    fprintf(stderr,
+            "[menu-diag] setmenu ok=%d verify=%p lasterr=%lu\n", (int)ok,
+            (void*)GetMenu(hwnd), (unsigned long)GetLastError());
 }
 
 // -------- menu exports -----------------------------------------------------
@@ -229,6 +243,10 @@ __declspec(dllexport) void bunium_system_menu_add_separator(void* menu) {
 
 __declspec(dllexport) void bunium_system_set_application_menu(void* menu) {
   g_app_menu = static_cast<MenuHandle*>(menu);
+  if (getenv("BUNIUM_INPUT_DIAG"))
+    fprintf(stderr, "[menu-diag] set_application_menu handle=%p items=%zu\n",
+            menu,
+            g_app_menu ? g_app_menu->items().size() : 0);
   // Apply to every already-open window; windows created later pick it up in
   // bunium_window_create via BuniumApplyAppMenu.
   BuniumForEachPrimaryWindow(
@@ -487,7 +505,7 @@ __declspec(dllexport) void bunium_system_tray_set_menu(void* tray_ptr,
   // Rebuild + cache the popup HMENU; rebuilt each call in case the menu
   // changed since the last attachment (or a different menu is attached).
   if (tray->menu_cache) DestroyMenu(tray->menu_cache);
-  tray->menu_cache = BuildMenu(menu->items());
+  tray->menu_cache = BuildMenu(menu->items(), /*top_level=*/false);
   tray->has_menu = true;
   // A menu supersedes click delivery (matches Electron + the mac side).
   tray->click_enabled = false;

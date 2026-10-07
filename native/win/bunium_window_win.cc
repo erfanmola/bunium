@@ -28,6 +28,8 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX  // windows.h min/max macros would shadow std::min/::max
 #include <windows.h>
+#include <cstdio>
+#include <cstdlib>
 
 #include <dwmapi.h>
 #include <windowsx.h>  // GET_X_LPARAM/GET_Y_LPARAM
@@ -302,7 +304,22 @@ uint32_t ModifiersFromKeyboardState() {
 // actual target, sublayer or main view, from g_window_sublayers).
 void ForwardMouse(HWND hwnd, BuniumWinHandle* h, int logical_x,
                   int logical_y, UINT msg) {
-  void* parent = h->is_sublayer ? h->parent_hwnd : static_cast<void*>(hwnd);
+  // BUNIUM_INPUT_DIAG traces the OS->CEF input path (invaluable when clicks
+  // or hover silently do nothing: distinguishes "no WM_ message arrived" from
+  // "dispatched but dropped downstream").
+  static const bool diag = getenv("BUNIUM_INPUT_DIAG") != nullptr;
+  if (diag)
+    fprintf(stderr, "[input-diag] win msg=%u x=%d y=%d\n", msg, logical_x,
+            logical_y);
+  // The shim's registries (g_window_sublayers, g_target_to_client) are keyed
+  // by BuniumWinHandle* (see bunium_attach_window) -- passing the raw HWND
+  // here silently dropped every mouse event on Windows (both lookups miss).
+  void* self = static_cast<void*>(h);
+  void* parent = self;
+  if (h->is_sublayer) {
+    if (BuniumWinHandle* ph = FindHandle(h->parent_hwnd)) parent = ph;
+  }
+  (void)hwnd;
   int abs_x = logical_x, abs_y = logical_y;
   if (h->is_sublayer) {
     abs_x += h->abs_frame.left;
@@ -339,14 +356,16 @@ int KeyEventTypeFor(UINT msg) {
 // the event to whichever view most recently received a mouse click, so
 // this always forwards from the main window's hwnd (sublayers are
 // WS_EX_NOACTIVATE and never see keyboard messages).
-void ForwardKey(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+void ForwardKey(BuniumWinHandle* h, UINT msg, WPARAM wp, LPARAM lp) {
   uint16_t character = 0;
   if (msg == WM_CHAR) {
     character = static_cast<uint16_t>(wp);
   }
   int key_code = static_cast<int>(wp);
   if (msg == WM_CHAR) key_code = character;  // CHAR is ASCII; n/a for WPARAM VK
-  bunium_dispatch_key_event(hwnd, KeyEventTypeFor(msg),
+  // Like ForwardMouse: the shim looks up g_target_to_client by
+  // BuniumWinHandle*, so pass the handle -- the raw HWND missed every time.
+  bunium_dispatch_key_event(static_cast<void*>(h), KeyEventTypeFor(msg),
                             static_cast<int>(ModifiersFromKeyboardState()),
                             key_code, character);
 }
@@ -513,7 +532,7 @@ LRESULT CALLBACK BuniumWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_SYSKEYDOWN:
     case WM_SYSKEYUP: {
       if (!h) break;
-      ForwardKey(hwnd, msg, wp, lp);
+      ForwardKey(h, msg, wp, lp);
       return 0;
     }
 

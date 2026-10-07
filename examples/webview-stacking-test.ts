@@ -5,30 +5,33 @@
 // WebviewManager.updateOrder (window.ts) -> bunium_raise_native_sublayer
 // (bunium_shim.cpp/bunium_window_mac.mm), both the CALayer paint-order
 // raise and the g_window_sublayers hit-test registry reorder.
+
+import type { Server } from "bun";
 import { app } from "../src/app";
 import { BuniumWindow } from "../src/index";
 import { lib } from "../src/native";
 
-function clickablePage(bg: string) {
-  return `data:text/html,${encodeURIComponent(`
+function clickableBody(bg: string) {
+  return `
 <body style="margin:0">
 <div id="box" style="width:100%;height:100%;background:${bg}"
      onclick="document.getElementById('box').style.background='lime'"></div>
 </body>
-`)}`;
+`;
 }
 
 // Two fully-overlapping webviews at the same rect. "top" starts with
 // z-index 2 (on top), "bottom" with z-index 1 (underneath). A small script
 // listens for a 'set-z' message from the main side so the test can flip
 // stacking order mid-run and verify _syncOrder picks it up.
-const outerHtml = `data:text/html,${encodeURIComponent(`
+function outerBody(origin: string) {
+  return `
 <body style="margin:0">
 <div id="box" style="width:100%;height:100%;background:red"></div>
-<bunium-webview id="bottom" src="${clickablePage("blue")}"
+<bunium-webview id="bottom" src="${origin}/inner?bg=blue"
   style="position:absolute;left:100px;top:100px;width:200px;height:150px;z-index:1;">
 </bunium-webview>
-<bunium-webview id="top" src="${clickablePage("yellow")}"
+<bunium-webview id="top" src="${origin}/inner?bg=yellow"
   style="position:absolute;left:100px;top:100px;width:200px;height:150px;z-index:2;">
 </bunium-webview>
 <script>
@@ -37,13 +40,38 @@ window.__bunium.on('set-z', function(payload) {
 });
 </script>
 </body>
-`)}`;
+`;
+}
+
+// Served over loopback http with an allowlisted origin: the v1 trust model
+// only injects window.__bunium into trusted origins, and opaque data:
+// origins cannot be allowlisted (see encodeTrustedOrigins in src/window.ts).
+const server: Server<never> = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname === "/inner")
+      return new Response(clickableBody(url.searchParams.get("bg") ?? "blue"), {
+        headers: { "content-type": "text/html" },
+      });
+    if (url.pathname === "/outer") {
+      const origin = `http://127.0.0.1:${server.port}`;
+      return new Response(outerBody(origin), {
+        headers: { "content-type": "text/html" },
+      });
+    }
+    return new Response("not found", { status: 404 });
+  },
+});
+const origin = `http://127.0.0.1:${server.port}`;
 
 const win = new BuniumWindow({
-  url: outerHtml,
+  url: `${origin}/outer`,
   width: 600,
   height: 400,
   title: "webview stacking test",
+  trustedOrigins: [origin],
 });
 
 function pump(ms: number) {
@@ -122,4 +150,5 @@ console.log(
 );
 
 win.close();
+server.stop(true);
 app.shutdown();

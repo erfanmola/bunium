@@ -418,9 +418,18 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
                               const char *resources_dir_path,
                               const char *root_cache_path) {
   if (framework_dir_path && *framework_dir_path)
+#if defined(_WIN32)
+    // setenv is POSIX-only; _putenv_s always overwrites (overwrite=1).
+    _putenv_s("BUNIUM_FRAMEWORK_DIR", framework_dir_path);
+#else
     setenv("BUNIUM_FRAMEWORK_DIR", framework_dir_path, 1);
+#endif
   if (root_cache_path && *root_cache_path)
+#if defined(_WIN32)
+    _putenv_s("BUNIUM_ROOT_CACHE_PATH", root_cache_path);
+#else
     setenv("BUNIUM_ROOT_CACHE_PATH", root_cache_path, 1);
+#endif
   if (getenv("BUNIUM_BUNDLE_DEBUG")) {
 #if defined(__APPLE__)
     CFBundleRef mb = CFBundleGetMainBundle();
@@ -496,8 +505,16 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
   // the bundle layout and bootstrap needed for CEF's macOS Seatbelt sandbox;
   // source-tree development runs use the unsandboxed helper binary.
   settings.no_sandbox = !(root_cache_path && *root_cache_path);
+#if defined(__APPLE__)
   if (!settings.no_sandbox)
     fprintf(stderr, "[sandbox] packaged macOS sandbox mode enabled\n");
+#else
+  // No Seatbelt/cef_sandbox.lib off macOS: report honestly instead of
+  // printing the macOS line (packaged launchers always set a cache root,
+  // so no_sandbox is false here too).
+  if (!settings.no_sandbox)
+    fprintf(stderr, "[sandbox] packaged run without OS sandbox (macOS-only)\n");
+#endif
   settings.windowless_rendering_enabled = true;
   settings.multi_threaded_message_loop = false;
   // true: CEF tells the host exactly when it next needs
@@ -1222,6 +1239,17 @@ BUNIUM_EXPORT void bunium_dispatch_mouse_click(void *window_handle, int x,
 
   g_last_focused_target = target;
 
+  static const bool diag = getenv("BUNIUM_INPUT_DIAG") != nullptr;
+  if (diag)
+    fprintf(stderr,
+            "[input-diag] shim click x=%d y=%d button=%d up=%d count=%d\n",
+            local_x, local_y, button, mouse_up, click_count);
+  // A press must focus the browser first: OSR hosts don't become focused
+  // implicitly (no first-responder chain as on macOS), and an unfocused
+  // browser drops mouse input. Same lazy claim the attach and key-event
+  // paths already do; no-op once focused.
+  if (!mouse_up)
+    browser->GetHost()->SetFocus(true);
   CefMouseEvent event;
   event.x = local_x;
   event.y = local_y;

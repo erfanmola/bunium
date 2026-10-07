@@ -13,17 +13,15 @@
 // 3) moving/resizing the element in-page (a live style mutation, no
 //    navigation) live-updates the native sublayer's frame via the rAF loop.
 
+import type { Server } from "bun";
 import { app } from "../src/app";
 import { BuniumWindow } from "../src/index";
 import { lib } from "../src/native";
 
-const innerPage = `data:text/html,${encodeURIComponent(
-  '<body style="margin:0;background:blue"></body>',
-)}`;
-
-const outerHtml = `data:text/html,${encodeURIComponent(`
+const innerBody = '<body style="margin:0;background:blue"></body>';
+const outerBody = (innerUrl: string) => `
 <body style="margin:0">
-  <bunium-webview id="wv" src="${innerPage}"
+  <bunium-webview id="wv" src="${innerUrl}"
     style="position:absolute;left:50px;top:40px;width:200px;height:150px;">
   </bunium-webview>
   <script>
@@ -36,13 +34,35 @@ const outerHtml = `data:text/html,${encodeURIComponent(`
     });
   </script>
 </body>
-`)}`;
+`;
+
+// Pages are served over loopback http (not data: URLs): the v1 trust model
+// only injects window.__bunium into allowlisted origins, and opaque data:
+// origins cannot be allowlisted (see encodeTrustedOrigins).
+const server: Server<never> = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname === "/inner")
+      return new Response(innerBody, {
+        headers: { "content-type": "text/html" },
+      });
+    if (url.pathname === "/outer")
+      return new Response(outerBody(`http://127.0.0.1:${server.port}/inner`), {
+        headers: { "content-type": "text/html" },
+      });
+    return new Response("not found", { status: 404 });
+  },
+});
+const origin = `http://127.0.0.1:${server.port}`;
 
 const win = new BuniumWindow({
-  url: outerHtml,
+  url: `${origin}/outer`,
   width: 600,
   height: 400,
   title: "webview element test",
+  trustedOrigins: [origin],
 });
 
 function pump(ms: number) {
@@ -129,4 +149,5 @@ console.log(
 );
 
 win.close();
+server.stop(true);
 app.shutdown();

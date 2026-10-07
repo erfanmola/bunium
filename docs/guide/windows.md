@@ -68,6 +68,14 @@ the browser subprocess is pointed at `native/build/bunium_subprocess.exe` by
   readback (limegreen center pixel) — real rendering.
 - `examples/transparent-window-test.ts` — corner pixel opaque red, middle
   pixel transparent.
+- `scripts/run-examples-win.sh` (Git Bash, `native/build` on `PATH`) —
+  full sweep against the pinned CEF distro. Known platform-scoped results:
+  `color-scheme-live-test.ts` is macOS-only (`osascript`); the
+  `<bunium-webview>` element examples serve pages over loopback http with
+  `trustedOrigins` because opaque `data:` origins cannot be allowlisted;
+  update examples skip Developer-Mode-gated file-symlink cases with a
+  logged reason (directory cases use junctions); AppImage executable-bit
+  checks run on Linux only.
 - `native/win/bringup_test.c` (throwaway harness) — view creation + pumping
   caveat: it hardcodes this machine's paths; only useful on this dev box.
 

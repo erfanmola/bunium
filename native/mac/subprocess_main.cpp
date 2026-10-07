@@ -1,7 +1,13 @@
 #include "bunium_common.h"
 #include "include/cef_app.h"
+#if defined(__APPLE__)
+// Seatbelt sandbox bootstrap + helper-bundle library loader are macOS-only;
+// Windows links no sandbox library (see docs/guide/windows.md) and resolves
+// libcef.dll via PATH/DLL dir, so these headers must not leak into the
+// Windows subprocess build (regression vs 4d58c8c).
 #include "include/cef_sandbox_mac.h"
 #include "include/wrapper/cef_library_loader.h"
+#endif
 
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
@@ -47,6 +53,10 @@ int main(int argc, char *argv[]) {
 #if defined(__APPLE__)
   DumpBundleDebug("subprocess", argc, argv);
 #endif
+#if defined(__APPLE__)
+  // macOS packaged helpers must enter the Seatbelt sandbox and load CEF from
+  // the helper bundle; dev-tree runs load the framework directly. Windows
+  // has no sandbox library and needs neither branch (4d58c8c behavior).
   const char *cache_root = getenv("BUNIUM_ROOT_CACHE_PATH");
   const bool packaged = cache_root && *cache_root;
   CefScopedSandboxContext sandbox_context;
@@ -72,6 +82,7 @@ int main(int argc, char *argv[]) {
       return 1;
     }
   }
+#endif // defined(__APPLE__)
 #if defined(_WIN32)
   // Windows' CefMainArgs only takes an HINSTANCE (Chromium re-parses the
   // real command line) -- the POSIX (argc, argv) overload doesn't exist.
@@ -80,8 +91,12 @@ int main(int argc, char *argv[]) {
   CefMainArgs main_args(argc, argv);
 #endif
   CefRefPtr<BuniumApp> app(new BuniumApp);
+#if defined(__APPLE__)
   int result = CefExecuteProcess(main_args, app.get(), nullptr);
   if (!packaged)
     cef_unload_library();
   return result;
+#else
+  return CefExecuteProcess(main_args, app.get(), nullptr);
+#endif
 }

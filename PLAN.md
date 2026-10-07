@@ -2668,3 +2668,94 @@ arriving mid-wait still sat until that timer fired.
 **Decided:** IPC wire format — see `ARCHITECTURE.md` §15/§18 (CefProcessMessage-based, named
 messages, JSON payloads, ≤8-arg native ABI functions).
 **Not yet decided:** package manager/monorepo layout, repo hosting.
+
+## Post-Phase-11: Windows x64 close-out on real hardware (2026-10-07)
+
+Bare-metal Windows 11 Pro 26H2 (build 26300), Intel i5-14600K x64, DPR 1,
+Bun 1.4.2, clang-cl 22.1.8, pinned CEF distro. Local TMA-Studio `rewrite`
+checkout side-by-side; all TMA-side gates below ran against this tree.
+
+- [x] **Pinned candidate did not build on Windows.** `bunium_shim.cpp` used
+      POSIX `setenv` (now `_putenv_s` under `_WIN32`), and the 0f64c6f
+      mac-sandbox init in the shared `subprocess_main.cpp` (unconditional
+      `cef_sandbox_mac.h` include) broke the Windows TU -- guarded the
+      includes and the packaged/dev-tree sandbox block to `__APPLE__`,
+      restoring the 4d58c8c Windows behavior. `native/win/build.sh` green.
+- [x] **No OS input reached CEF on Windows, ever.** `ForwardMouse` passed
+      the raw `HWND` where the shim's registries (`g_window_sublayers`,
+      `g_target_to_client`) are keyed by `BuniumWinHandle*` -- every mouse
+      event silently missed both lookups (same for `ForwardKey`). Fixed to
+      pass handles (`FindHandle` for sublayer parents). Separately, mouse
+      presses now claim CEF focus first (OSR hosts don't focus implicitly;
+      matches the existing key-event/attach precedent). Proven with
+      `BUNIUM_INPUT_DIAG` tracing + real synthetic clicks navigating a
+      packaged app end-to-end (settings window opened from an OS click).
+- [x] **Menu bar rendered but dead.** Top-level bar must be `CreateMenu()`,
+      not `CreatePopupMenu()` (`SetMenu` rejected it with
+      ERROR_INVALID_PARAMETER; tray popups stay popups). Menu bar now shows,
+      dropdown opens, item clicks dispatch `WM_COMMAND` -> system bus ->
+      `onItemClicked` (verified: menu Create project opened a project
+      window, menu Quit exited clean). Temp `BUNIUM_INPUT_DIAG`-gated
+      `[menu-diag]` tracing kept for future menu debugging.
+- [x] **Sandbox log lied on Windows.** `[sandbox] packaged macOS sandbox
+      mode enabled` printed on every packaged Windows run; now macOS-only,
+      other platforms log `packaged run without OS sandbox (macOS-only)`.
+- [x] **Windows packager dropped app `node_modules`.** `packaging/win`
+      excluded them wholesale and materialized only `bunium`, so any real
+      app (Studio's `@mtcute/bun`) died on launch. Now installs production
+      deps into the staged app (workspace siblings materialized from
+      source, registry `bunium` spec stripped so the ABI-matching
+      materialization survives, BOM-tolerant package.json reads).
+- [x] **`<bunium-webview>` examples were stale under the v1 trust model.**
+      `data:` URLs have opaque origins that cannot be allowlisted
+      (`encodeTrustedOrigins` rejects `"null"` by design), so all five
+      webview examples served pages over loopback http with
+      `trustedOrigins` instead. All pass.
+- [x] **Update examples:** AppImage executable-bit check gated to Linux;
+      file-symlink refusal case skips with a logged reason on Windows
+      without Developer Mode (dir-symlink cases use junctions); journal
+      staging-symlink case uses junctions.
+- [x] **Full sweep: 40/42.** Only `color-scheme-live-test.ts` (mac-only
+      `osascript`, the one expected failure) and `geolocation-override`
+      `GEOLOCATION_CLEAR_PERMISSION` fail. (`vite-dev-test.ts` failed one
+      sweep run on a leaked port-5199 server from a prior run; passes
+      clean in isolation.) The geolocation failure is environment truth,
+      not a product bug: the clear works, but this box's Windows Location
+      resolves a real position (varying real coords across runs, distinct
+      from the SF mock) where the gate assumes denied-by-default. Geolocation override stays
+      macOS-qualified per `docs/guide/guest.md`.
+- [x] **TMA-Studio Windows gates all green** (fresh native + packaged):
+      `PACKAGED_APP_VERIFY:PASS` + `TRUSTED_ORIGIN_VERIFY:PASS`,
+      `NATIVE_SECURITY_GATE:PASS`, `NATIVE_PARTITION_GATE:PASS` (both),
+      `NATIVE_GUEST_GATE:PASS` (both, evidence JSON),
+      `DEVICE_EMULATION_GATE:PASS` (host DPR 1),
+      `NATIVE_WINDOW_CONTROLS_GATE:PASS` (both, focus 4/4 + native modal
+      dialog evidence), vault round-trip, `NATIVE_ACCOUNT_IPC_GATE:PASS`,
+      `NATIVE_USERS_SCREEN_GATE:PASS`, packaged Studio Settings
+      (locale/theme/scale/device/alwaysOnTop changed, saved, reopened,
+      SQLite-verified), Storage (measured 14KB x2, cache clear 14->6KB,
+      site-data clear with native confirm, second partition intact),
+      native menu (Create project window, Quit clean exit).
+- [x] **TMA-Studio fixes landed for the above:** `.gitattributes`
+      (`eol=lf`, `.bat` stays CRLF), `/`-vs-`\` bugs in check-locales /
+      check-tokens / protocol-conformance-report (the last also fixed a
+      real 122->117 binding undercount), platform-correct `join` in
+      legacy-import, Windows-tolerant unit tests (chmod bits, symlink
+      junctions, path seps), `BUNIUM_MODULE` support in the window-controls
+      fixture, tmpdir-based users screenshot path, `HOLD_OPEN`-on-failure
+      + TDZ-safe teardown in the composition fixture, host-side native
+      confirm for site-data clear (CEF auto-cancels `window.confirm`
+      without a parent handle), silent-death fix in
+      `KeyedStudioWindowRegistry.open` (failed registration no longer
+      records the key or emits empty before the error surfaces) with
+      regression test, `bun.lock` platform-package refresh (0.0.2->0.0.6).
+- [ ] **Known issues left open.** (1) Window-controls HOLD run crashes
+      (`0x80000003`) when a window stays minimized for ~seconds before
+      restore; fast sequences, hide/show, and OS taskbar restore are fine
+      -- needs cdb/WinDbg, no debugger on the box. (2) Trusted overlays /
+      native alpha composition stay macOS-only by design (composition gate
+      FAILs on the explicit guard; transparent host capture retained).
+      (3) Native capture is macOS-only; no FFmpeg on the box. (4) Physical
+      DPR 2 not run (would need an OS display-scale change). (5) Benchmark
+      `RESULTS.md` Windows table not re-measured this session.
+

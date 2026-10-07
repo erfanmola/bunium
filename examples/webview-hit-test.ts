@@ -9,34 +9,62 @@
 // dispatched at a live <bunium-webview>'s on-screen position reaches the
 // EMBEDDED page, not the OUTER page, purely from declaring the element in
 // HTML (no manual sublayer/view wiring, unlike sublayer-hit-test.ts).
+
+import type { Server } from "bun";
 import { app } from "../src/app";
 import { BuniumWindow } from "../src/index";
 import { lib } from "../src/native";
 
-function clickablePage(bg: string) {
-  return `data:text/html,${encodeURIComponent(`
+function clickableBody(bg: string) {
+  return `
 <body style="margin:0">
 <div id="box" style="width:100%;height:100%;background:${bg}"
      onclick="document.getElementById('box').style.background='lime'"></div>
 </body>
-`)}`;
+`;
 }
 
-const outerHtml = `data:text/html,${encodeURIComponent(`
+function outerBody(origin: string) {
+  return `
 <body style="margin:0">
 <div id="box" style="width:100%;height:100%;background:red"
      onclick="document.getElementById('box').style.background='lime'"></div>
-<bunium-webview id="wv" src="${clickablePage("blue")}"
+<bunium-webview id="wv" src="${origin}/inner?bg=blue"
   style="position:absolute;left:100px;top:100px;width:250px;height:150px;">
 </bunium-webview>
 </body>
-`)}`;
+`;
+}
+
+// Served over loopback http with an allowlisted origin: the v1 trust model
+// only injects window.__bunium into trusted origins, and opaque data:
+// origins cannot be allowlisted (see encodeTrustedOrigins in src/window.ts).
+const server: Server<never> = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname === "/inner")
+      return new Response(clickableBody(url.searchParams.get("bg") ?? "blue"), {
+        headers: { "content-type": "text/html" },
+      });
+    if (url.pathname === "/outer") {
+      const origin = `http://127.0.0.1:${server.port}`;
+      return new Response(outerBody(origin), {
+        headers: { "content-type": "text/html" },
+      });
+    }
+    return new Response("not found", { status: 404 });
+  },
+});
+const origin = `http://127.0.0.1:${server.port}`;
 
 const win = new BuniumWindow({
-  url: outerHtml,
+  url: `${origin}/outer`,
   width: 600,
   height: 400,
   title: "webview hit test",
+  trustedOrigins: [origin],
 });
 
 function pump(ms: number) {
@@ -109,4 +137,5 @@ const outerTurnedGreen =
 console.log("second click routed to OUTER page:", outerTurnedGreen);
 
 win.close();
+server.stop(true);
 app.shutdown();

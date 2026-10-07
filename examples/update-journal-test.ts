@@ -212,7 +212,20 @@ for (const [i, c] of cases.entries()) {
   await mkdir(outside, { recursive: true });
   await writeFile(join(installDir, "app.js"), "OLD\n");
   await writeFile(join(outside, "sentinel"), "KEEP\n");
-  await symlink(outside, fakeStaging);
+  // Directory symlinks need Developer Mode / SeCreateSymbolicLinkPrivilege
+  // on Windows; junctions need no privilege and exercise the same
+  // not-a-real-tree rejection.
+  try {
+    await symlink(outside, fakeStaging);
+  } catch (error) {
+    if (
+      process.platform !== "win32" ||
+      (error as NodeJS.ErrnoException)?.code !== "EPERM"
+    )
+      throw error;
+    const { symlinkSync } = await import("node:fs");
+    symlinkSync(outside, fakeStaging, "junction");
+  }
   await writeFile(
     `${installDir}.updating`,
     `${JSON.stringify({ staging: fakeStaging })}\n`,

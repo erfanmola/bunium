@@ -11,31 +11,56 @@
 // bounds -- the right half should end up clipped away. A second,
 // unclipped webview (outside any overflow:hidden ancestor) is used as a
 // control to confirm clipping doesn't apply where it shouldn't.
+
+import type { Server } from "bun";
 import { app } from "../src/app";
 import { BuniumWindow } from "../src/index";
 import { lib } from "../src/native";
 
-const innerPage = (bg: string) =>
-  `data:text/html,${encodeURIComponent(`<body style="margin:0;background:${bg}"></body>`)}`;
-
-const outerHtml = `data:text/html,${encodeURIComponent(`
+const innerBody = (bg: string) =>
+  `<body style="margin:0;background:${bg}"></body>`;
+const outerBody = (origin: string) => `
 <body style="margin:0">
   <div style="position:absolute;left:50px;top:50px;width:150px;height:150px;overflow:hidden;background:#333">
-    <bunium-webview id="clipped" src="${innerPage("blue")}"
+    <bunium-webview id="clipped" src="${origin}/inner?bg=blue"
       style="position:absolute;left:100px;top:0px;width:200px;height:150px;">
     </bunium-webview>
   </div>
-  <bunium-webview id="unclipped" src="${innerPage("green")}"
+  <bunium-webview id="unclipped" src="${origin}/inner?bg=green"
     style="position:absolute;left:300px;top:50px;width:150px;height:150px;">
   </bunium-webview>
 </body>
-`)}`;
+`;
+
+// Served over loopback http with an allowlisted origin: the v1 trust model
+// only injects window.__bunium into trusted origins, and opaque data:
+// origins cannot be allowlisted (see encodeTrustedOrigins in src/window.ts).
+const server: Server<never> = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname === "/inner")
+      return new Response(innerBody(url.searchParams.get("bg") ?? "blue"), {
+        headers: { "content-type": "text/html" },
+      });
+    if (url.pathname === "/outer") {
+      const origin = `http://127.0.0.1:${server.port}`;
+      return new Response(outerBody(origin), {
+        headers: { "content-type": "text/html" },
+      });
+    }
+    return new Response("not found", { status: 404 });
+  },
+});
+const origin = `http://127.0.0.1:${server.port}`;
 
 const win = new BuniumWindow({
-  url: outerHtml,
+  url: `${origin}/outer`,
   width: 600,
   height: 400,
   title: "webview clip test",
+  trustedOrigins: [origin],
 });
 
 function pump(ms: number) {
@@ -105,4 +130,5 @@ const controlCorrect = unclippedResult.clipped === false;
 console.log("unclipped control element has no active clip:", controlCorrect);
 
 win.close();
+server.stop(true);
 app.shutdown();

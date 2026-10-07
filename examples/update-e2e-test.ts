@@ -361,15 +361,21 @@ const checkRuntimeFeed = (
       selected.status === "runtime-installer-available" &&
       route.format === "linux-appimage"
     ) {
-      const appImagePath = await new Updater().downloadRuntimeInstaller(
-        selected.update,
-        { directory: join(base, "runtime-appimage-download") },
-      );
-      const appImageStat = await lstat(appImagePath);
-      check(
-        (appImageStat.mode & 0o111) !== 0,
-        "runtime installer: verified AppImage is executable",
-      );
+      if (process.platform !== "linux") {
+        // The AppImage executable bit is a Linux-only property; other
+        // platforms only verify the route resolves.
+        console.log("skip: AppImage executable bit is Linux-only");
+      } else {
+        const appImagePath = await new Updater().downloadRuntimeInstaller(
+          selected.update,
+          { directory: join(base, "runtime-appimage-download") },
+        );
+        const appImageStat = await lstat(appImagePath);
+        check(
+          (appImageStat.mode & 0o111) !== 0,
+          "runtime installer: verified AppImage is executable",
+        );
+      }
     }
   }
   let wrongPlatformRefused = false;
@@ -404,33 +410,51 @@ const checkRuntimeFeed = (
   );
 
   const symlinkInstaller = join(base, "runtime-installer-symlink");
-  await symlink(runtimeInstallerSource, symlinkInstaller);
-  let symlinkRefused = false;
+  // File symlinks need Developer Mode / SeCreateSymbolicLinkPrivilege on
+  // Windows (directory junctions can't stand in for a file). Without it,
+  // skip the refusal case with a logged reason instead of failing.
+  let symlinkSkipped = false;
   try {
-    await releaseRuntimeInstaller({
-      product: "e2e-app",
-      channel: "runtime-symlink",
-      platform: "mac",
-      arch: "arm64",
-      version: "1.0.2",
-      sequence: 3,
-      fromRuntimeVersion: "0.0.6",
-      fromCefVersion: "1513.0.0",
-      runtimeVersion: "0.0.8",
-      cefVersion: "1513.0.2",
-      minimumBunVersion: "1.4.0",
-      minimumOsVersion: "1.0.0",
-      installerFormat: "mac-pkg",
-      installerPath: symlinkInstaller,
-      outDir: runtimeOutDir,
-      keyId,
-      signingKeyPem: privateKeyPem,
-    });
+    await symlink(runtimeInstallerSource, symlinkInstaller);
   } catch (error) {
-    symlinkRefused = String(error).includes("regular file");
+    if (
+      process.platform !== "win32" ||
+      (error as NodeJS.ErrnoException)?.code !== "EPERM"
+    )
+      throw error;
+    symlinkSkipped = true;
+    console.log(
+      "skip: runtime installer symlink case needs Developer Mode on Windows",
+    );
   }
-  await rm(symlinkInstaller, { force: true });
-  check(symlinkRefused, "runtime installer release: symbolic link refused");
+  let symlinkRefused = false;
+  if (!symlinkSkipped) {
+    try {
+      await releaseRuntimeInstaller({
+        product: "e2e-app",
+        channel: "runtime-symlink",
+        platform: "mac",
+        arch: "arm64",
+        version: "1.0.2",
+        sequence: 3,
+        fromRuntimeVersion: "0.0.6",
+        fromCefVersion: "1513.0.0",
+        runtimeVersion: "0.0.8",
+        cefVersion: "1513.0.2",
+        minimumBunVersion: "1.4.0",
+        minimumOsVersion: "1.0.0",
+        installerFormat: "mac-pkg",
+        installerPath: symlinkInstaller,
+        outDir: runtimeOutDir,
+        keyId,
+        signingKeyPem: privateKeyPem,
+      });
+    } catch (error) {
+      symlinkRefused = String(error).includes("regular file");
+    }
+    await rm(symlinkInstaller, { force: true });
+    check(symlinkRefused, "runtime installer release: symbolic link refused");
+  }
 }
 
 function unsignedManifest(

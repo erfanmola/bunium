@@ -190,7 +190,10 @@ class BuniumApp {
       const createdAt = this.windowCreatedAt.get(win) ?? 0;
       const settled =
         performance.now() - createdAt >= BuniumApp.RESIZE_SETTLE_MS;
-      if (settled && (!last || last.width !== width || last.height !== height)) {
+      if (
+        settled &&
+        (!last || last.width !== width || last.height !== height)
+      ) {
         this.lastSizes.set(win, { width, height });
         win.onNativeResize(width, height);
       }
