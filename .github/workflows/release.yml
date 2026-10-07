@@ -170,7 +170,7 @@ jobs:
          - name: Fetch CEF distro (reproduces vendor/cef-windows-x64)
            shell: bash
            run: |
-              url="${CEF_ZIP_URL:-https://cef-builds.spotifycdn.com/cef_binary_151.3.18+gbeff58d+chromium-151.0.7922.138_windows64_minimal.tar.bz2}"
+              url="${CEF_ZIP_URL:-https://cef-builds.spotifycdn.com/cef_binary_151.3.16+gbe1e15d+chromium-151.0.7922.109_windows64_minimal.tar.bz2}"
               echo "downloading CEF from $url"
               curl -L --fail -o cef.tar.bz2 "$url"
               mkdir -p vendor

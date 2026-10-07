@@ -44,8 +44,24 @@ jobs:
             exit 0
           fi
           archive="cef_binary_${CEF_VERSION}_macosarm64_minimal.tar.bz2"
-          curl -fL --retry 3 -o "$archive" \
-            "https://cef-builds.spotifycdn.com/${archive}"
+          # Single-shot curl hits a per-response size cap on some network
+          # paths (curl error 18 / truncated file -> sha1 mismatch, seen in
+          # CI); fetch in 10MB Range chunks instead, mirroring
+          # docker/linux/fetch-cef.sh.
+          url="https://cef-builds.spotifycdn.com/${archive}"
+          total="$(curl -fsI "$url" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-length"{print $2}')"
+          : > "$archive"
+          offset=0
+          chunk=10485760
+          while [ "$offset" -lt "$total" ]; do
+            end=$((offset + chunk - 1))
+            if [ "$end" -ge "$total" ]; then end=$((total - 1)); fi
+            curl -fL --retry 5 --retry-all-errors -r "${offset}-${end}" \
+              -o chunk.part -s "$url"
+            cat chunk.part >> "$archive"
+            rm -f chunk.part
+            offset=$((end + 1))
+          done
           actual="$(shasum -a 1 "$archive" | awk '{print $1}')"
           [ "$actual" = "$CEF_SHA1" ] || {
             echo "::error::CEF sha1 mismatch: expected $CEF_SHA1 got $actual"

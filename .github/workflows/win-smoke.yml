@@ -56,14 +56,29 @@ jobs:
             echo "CEF distro already present"
             exit 0
           fi
-          url="${CEF_ZIP_URL:-https://cef-builds.spotifycdn.com/cef_binary_151.3.18+gbeff58d+chromium-151.0.7922.138_windows64_minimal.tar.bz2}"
+          url="${CEF_ZIP_URL:-https://cef-builds.spotifycdn.com/cef_binary_151.3.16+gbe1e15d+chromium-151.0.7922.109_windows64_minimal.tar.bz2}"
           echo "downloading CEF from $url"
-          curl -L --fail -o cef.tar.bz2 "$url" || {
-            echo "::error::CEF download failed. Update CEF_ZIP_URL or the"
-            echo "::error::fallback URL in this workflow to match the version"
-            echo "::error::in vendor/cef-windows-x64/include/cef_version.h"
-            exit 1
-          }
+          # Single-shot curl hits a per-response size cap on some network
+          # paths (curl error 18 / truncated file, seen in CI); fetch in
+          # 10MB Range chunks instead, mirroring docker/linux/fetch-cef.sh.
+          total="$(curl -fsIL "$url" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-length"{print $2}' | tail -1)"
+          : > cef.tar.bz2
+          offset=0
+          chunk=10485760
+          while [ "$offset" -lt "$total" ]; do
+            end=$((offset + chunk - 1))
+            if [ "$end" -ge "$total" ]; then end=$((total - 1)); fi
+            curl -L --fail --retry 5 --retry-all-errors -r "${offset}-${end}" \
+              -o chunk.part -s "$url" || {
+              echo "::error::CEF download failed. Update CEF_ZIP_URL or the"
+              echo "::error::fallback URL in this workflow to match the version"
+              echo "::error::in vendor/cef-windows-x64/include/cef_version.h"
+              exit 1
+            }
+            cat chunk.part >> cef.tar.bz2
+            rm -f chunk.part
+            offset=$((end + 1))
+          done
           # Distro archives contain a single cef_binary_*/ dir; normalize to
           # vendor/cef-windows-x64.
           mkdir -p vendor
