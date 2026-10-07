@@ -106,14 +106,14 @@ jobs:
           grep -q "frameCount" smoke.log
 
       - name: Probe — dev-mode loopback (diagnostic, non-gating)
-        timeout-minutes: 3
-        # Same-runner contrast for the packaged TRUSTED_ORIGIN failure:
-        # identical env and two-window loopback shape (trusted 127.0.0.1 +
-        # untrusted localhost, mirroring the fixture), but unpackaged (dev
-        # helper, no .app sandbox context). DEV_LOOPBACK2:PASS + packaged
-        # FAIL isolates the .app packaging context; DEV_LOOPBACK2:FAIL
-        # points at runner infra instead. Never gates the job -- verdict
-        # line is the record.
+        timeout-minutes: 4
+        # Same-runner contrast for the packaged TRUSTED_ORIGIN failure,
+        # now mirroring the fixture's full shape: a first window that
+        # loads and is then CLOSED, followed by the trusted 127.0.0.1 +
+        # untrusted localhost pair. Unpackaged dev helper throughout, so a
+        # FAIL here implicates close/recreate sequencing (reproducible
+        # without packaging); PASS keeps it packaging-context-only. Never
+        # gates the job -- verdict line is the record.
         continue-on-error: true
         env:
           BUNIUM_CEF_VERBOSE: "1"
@@ -136,6 +136,24 @@ jobs:
           });
           const origin = server.url.origin;
           let messages = 0;
+          const onProbe = () => {
+            messages += 1;
+          };
+          const first = new BuniumWindow({
+            url: `${origin}/first`,
+            trustedOrigins: [origin],
+            width: 400,
+            height: 300,
+            title: "probe first",
+          });
+          first.on("dev-probe", onProbe);
+          const readyDeadline = Date.now() + 30000;
+          while (Date.now() < readyDeadline && messages < 1) {
+            await Bun.sleep(50);
+          }
+          const firstLoaded = messages >= 1;
+          first.close();
+          messages = 0;
           let trustedWindow: BuniumWindow | undefined;
           let untrustedWindow: BuniumWindow | undefined;
           try {
@@ -146,9 +164,7 @@ jobs:
               height: 240,
               title: "dev probe trusted",
             });
-            trustedWindow.on("dev-probe", () => {
-              messages += 1;
-            });
+            trustedWindow.on("dev-probe", onProbe);
             untrustedWindow = new BuniumWindow({
               url: `http://localhost:${server.port}/u`,
               trustedOrigins: [origin],
@@ -156,9 +172,7 @@ jobs:
               height: 240,
               title: "dev probe untrusted",
             });
-            untrustedWindow.on("dev-probe", () => {
-              messages += 1;
-            });
+            untrustedWindow.on("dev-probe", onProbe);
             const deadline = Date.now() + 30000;
             while (
               Date.now() < deadline &&
@@ -167,9 +181,12 @@ jobs:
               await Bun.sleep(50);
             }
             const passed =
-              seen.has("/t") && seen.has("/u") && messages >= 1;
+              firstLoaded &&
+              seen.has("/t") &&
+              seen.has("/u") &&
+              messages >= 1;
             console.log(
-              `DEV_LOOPBACK2:${passed ? "PASS" : "FAIL"} (requests=${[...seen].join(",")}; messages=${messages})`,
+              `DEV_LOOPBACK3:${passed ? "PASS" : "FAIL"} (first=${firstLoaded ? "loaded" : "stalled"}; requests=${[...seen].join(",")}; messages=${messages})`,
             );
           } finally {
             trustedWindow?.close();
@@ -178,8 +195,8 @@ jobs:
           }
           PROBE_EOF
           bun dev-loopback-probe.ts > dev-loopback.log 2>&1 || true
-          grep -qE "DEV_LOOPBACK2:(PASS|FAIL)" dev-loopback.log || echo "DEV_LOOPBACK2:NO-VERDICT" | tee -a dev-loopback.log
-          grep -E "DEV_LOOPBACK2" dev-loopback.log
+          grep -qE "DEV_LOOPBACK3:(PASS|FAIL)" dev-loopback.log || echo "DEV_LOOPBACK3:NO-VERDICT" | tee -a dev-loopback.log
+          grep -E "DEV_LOOPBACK3" dev-loopback.log
           rm -f dev-loopback-probe.ts
 
       - name: Collect crash reports
