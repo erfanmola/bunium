@@ -128,7 +128,6 @@ jobs:
           # requests (TRUSTED_ORIGIN_VERIFY:FAIL with requests=). Chromium
           # honors no_proxy: bypass the proxy for loopback outright.
           no_proxy: "127.0.0.1,localhost"
-          NO_PROXY: "127.0.0.1,localhost"
         run: |
           bash packaging/mac/package.sh \
             -a packaging/mac/fixture-app -n BuniumFixture \
