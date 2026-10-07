@@ -479,6 +479,14 @@ BUNIUM_EXPORT int bunium_init(const char *subprocess_path,
   // can't resolve -- without this, that manifests as an outright aborted
   // page load (ERR_ABORTED), not just the documented harmless log line
   // (ARCHITECTURE.md #19), and broke the darwin-arm64 release build.
+#if defined(__APPLE__)
+  // The unconditional push this comment describes was lost during tree
+  // staging (0f64c6f); restoring it macOS-scoped. Without it, packaged
+  // loopback loads abort with ERR_ABORTED on PAC-advertising CI runners
+  // while dev-mode unsandboxed loads on the same runner still pass
+  // (mac-smoke Oct 2026). Linux/Windows argv stays exactly as verified.
+  injected_argv.push_back("--no-proxy-server");
+#endif
   const char *switches = getenv("BUNIUM_CEF_SWITCHES");
   if (switches && *switches) {
     std::string s(switches);
