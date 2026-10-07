@@ -228,7 +228,12 @@ jobs:
           # Verbose browser logging for the packaged-loopback diagnosis
           # (browser-side navigation/proxy lines land in pack-verify.log;
           # helper stderr does not propagate out of the sandbox).
+          # BUNIUM_PUMP_DIAG proves whether the external message pump is
+          # still ticking while the loopback loads stall: ticks stopping
+          # means pump death (uncaught tick exception); ticks continuing
+          # means the stall is inside CEF compositing/GPU/renderer startup.
           BUNIUM_CEF_VERBOSE: "1"
+          BUNIUM_PUMP_DIAG: "1"
           BUNIUM_CEF_SWITCHES: "--disable-gpu --disable-gpu-compositing --enable-logging=stderr --v=1"
           # CI macOS runners advertise PAC/WPAD proxy auto-discovery, which
           # can intercept even loopback and abort the fixture's 127.0.0.1
@@ -292,6 +297,14 @@ jobs:
           pkill -KILL -f BuniumFixture 2>/dev/null || true
           pkill -KILL -f "Resources/app" 2>/dev/null || true
           sleep 1
+          # Verify the reap loudly: a surviving holder invalidates this
+          # probe via the default-profile singleton lock (seen for real).
+          if pgrep -f "bunium_subprocess|BuniumFixture" >/dev/null 2>&1; then
+            echo "STALE-PROCESSES:SURVIVED"
+            ps aux | grep -E "bunium_subprocess|BuniumFixture" | grep -v grep | head -n 5 || true
+          else
+            echo "STALE-PROCESSES:REAPED"
+          fi
           APP="dist-app/BuniumFixture.app"
           env -u BUNIUM_ROOT_CACHE_PATH \
             BUNIUM_SHIM_PATH="$PWD/$APP/Contents/Frameworks/bunium_shim.dylib" \
