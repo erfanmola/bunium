@@ -123,6 +123,12 @@ jobs:
           # launcher execs bun directly and inherits this env, but doesn't
           # get it for free just because the dev-mode step above set it.
           BUNIUM_CEF_SWITCHES: "--disable-gpu --disable-gpu-compositing"
+          # CI macOS runners advertise PAC/WPAD proxy auto-discovery, which
+          # can intercept even loopback and abort the fixture's 127.0.0.1
+          # requests (TRUSTED_ORIGIN_VERIFY:FAIL with requests=). Chromium
+          # honors no_proxy: bypass the proxy for loopback outright.
+          no_proxy: "127.0.0.1,localhost"
+          NO_PROXY: "127.0.0.1,localhost"
         run: |
           bash packaging/mac/package.sh \
             -a packaging/mac/fixture-app -n BuniumFixture \
