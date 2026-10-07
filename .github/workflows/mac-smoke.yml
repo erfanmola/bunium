@@ -258,6 +258,41 @@ jobs:
           grep -q "TRUSTED_ORIGIN_VERIFY:PASS" pack-verify.log
           grep -q "PACKAGED_APP_VERIFY:PASS" pack-verify.log
 
+      - name: Probe — packaged tree without per-app cache root (diagnostic, non-gating)
+        timeout-minutes: 4
+        # Runs the SAME packaged tree (same shim/helpers/dist) but bypasses
+        # the launcher so BUNIUM_ROOT_CACHE_PATH stays unset: no_sandbox=true
+        # with the default cache path. The gating step above runs sandboxed
+        # with the per-app root. BYPASS:PASS + gating FAIL isolates the
+        # app-isolation pair (sandbox and/or per-app root); BYPASS:FAIL
+        # exonerates both and leaves bundle/signature/launcher identity.
+        # Never gates the job -- verdict line is the record.
+        continue-on-error: true
+        env:
+          BUNIUM_CEF_VERBOSE: "1"
+          BUNIUM_CEF_SWITCHES: "--disable-gpu --disable-gpu-compositing --enable-logging=stderr --v=1"
+          no_proxy: "127.0.0.1,localhost"
+        run: |
+          APP="dist-app/BuniumFixture.app"
+          env -u BUNIUM_ROOT_CACHE_PATH \
+            BUNIUM_SHIM_PATH="$PWD/$APP/Contents/Frameworks/bunium_shim.dylib" \
+            BUNIUM_SUBPROCESS_PATH="$PWD/$APP/Contents/Frameworks/bunium_subprocess.app/Contents/MacOS/bunium_subprocess" \
+            BUNIUM_FRAMEWORK_DIR="$PWD/$APP/Contents/Frameworks/Chromium Embedded Framework.framework" \
+            "$PWD/$APP/Contents/MacOS/bun" "$PWD/$APP/Contents/Resources/app/bunium/main.ts" > pack-bypass.log 2>&1 &
+          app_pid=$!
+          deadline=$((SECONDS + 150))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            grep -qE "PACKAGED_APP_VERIFY:(PASS|FAIL)" pack-bypass.log && break
+            kill -0 "$app_pid" 2>/dev/null || break
+            sleep 1
+          done
+          kill -TERM "$app_pid" 2>/dev/null || true
+          sleep 1
+          kill -KILL "$app_pid" 2>/dev/null || true
+          pkill -KILL -f "Resources/app" 2>/dev/null || true
+          if grep -q "PACKAGED_APP_VERIFY:PASS" pack-bypass.log; then echo "PACKAGED_DEVROOT:PASS"; else echo "PACKAGED_DEVROOT:FAIL"; fi
+          grep -E "sandbox|TRUSTED_ORIGIN_VERIFY|PACKAGED_APP_VERIFY|load-error" pack-bypass.log | head -n 8 || true
+
       - name: Collect sandboxd denials (diagnostic)
         if: always()
         run: |
@@ -279,6 +314,7 @@ jobs:
             smoke.log
             pack.log
             pack-verify.log
+            pack-bypass.log
             dev-loopback.log
             sandboxd.log
             crash-reports/
