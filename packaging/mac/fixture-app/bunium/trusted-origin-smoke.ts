@@ -79,7 +79,12 @@ export async function verifyTrustedOriginBridge(): Promise<boolean> {
       messages.add(`${untrustedName}:${payload}`),
     );
 
-    const deadline = Date.now() + 8000;
+    // Cold CI VMs (sandboxed helper spawns, first-run profile, software
+    // rendering) can need well over 8s before the first loopback load
+    // completes; an expiry here aborts in-flight loads and reports
+    // requests=, which looks like a network failure but is only impatience
+    // (seen as a ~50% flake on macOS CI runners; real hardware is instant).
+    const deadline = Date.now() + 30000;
     while (
       Date.now() < deadline &&
       (!messages.has(`${trustedName}:ok`) ||
